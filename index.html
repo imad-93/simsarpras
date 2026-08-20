@@ -1185,7 +1185,7 @@ function renderAssets(){
     <div class="card">
       <div class="toolbar">
         <div class="toolbar-left"><input id="assetSearch" class="search-box" placeholder="🔎 Cari aset..." oninput="filterAssets()"></div>
-        <div class="toolbar-right">${canManage?'<button class="btn btn-primary" onclick="assetForm()">+ Tambah Aset</button>':''}</div>
+        <div class="toolbar-right">${canManage?'<button class="btn btn-primary" onclick="assetForm()">+ Tambah Aset</button><button class="btn btn-light" onclick="assetImportForm()">📥 Import</button>':''}</div>
       </div>
       <div id="assetsTable"></div>
     </div>
