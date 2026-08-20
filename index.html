@@ -556,7 +556,9 @@ async function buildDefaultDB(){
       APP_VERSION:'1.0.0',
       ENABLE_BOOKING:'TRUE',
       ENABLE_MAINTENANCE:'TRUE',
-      ENABLE_REPORT:'TRUE'
+      ENABLE_REPORT:'TRUE',
+      DEFAULT_BASE_FEE:0,
+      DEFAULT_FACILITY_FEE:0
     },
     AUDIT_LOG:[],
     SEQ:{ASSETS:0,ASSET_UNITS:0,BOOKINGS:0,REPORTS:0,MAINTENANCE:0}
@@ -605,16 +607,24 @@ async function buildDefaultDB(){
   const condBaik = db.ASSET_CONDITIONS[0].ID, condRingan = db.ASSET_CONDITIONS[1].ID;
 
   const assetsSeed = [
-    ['AST-0001','Proyektor Epson EB-X500',catElk,'Epson','EB-X500',2022,7500000],
-    ['AST-0002','AC Split 1.5PK',catElk,'Daikin','FTV15',2021,4200000],
-    ['AST-0003','Kursi Kuliah Lipat',catFrn,'Chitose','CL-01',2020,450000],
-    ['AST-0004','Laptop Kerja',catElk,'Lenovo','ThinkPad E14',2023,11500000]
+    // [CODE, NAME, CATEGORY_ID, BRAND, MODEL, YEAR, UNIT_PRICE, IS_FACILITY, FACILITY_FEE, CAN_LEND]
+    ['AST-0001','Proyektor Epson EB-X500',catElk,'Epson','EB-X500',2022,7500000, true, 100000, false],
+    ['AST-0002','AC Split 1.5PK',catElk,'Daikin','FTV15',2021,4200000, false, 0, false],
+    ['AST-0003','Kursi Kuliah Lipat',catFrn,'Chitose','CL-01',2020,450000, false, 0, true],
+    ['AST-0004','Laptop Kerja',catElk,'Lenovo','ThinkPad E14',2023,11500000, false, 0, true]
   ];
   assetsSeed.forEach(x=>{
     db.SEQ.ASSETS++;
     const category = db.ASSET_CATEGORIES.find(c=>c.ID===x[2]);
-    db.ASSETS.push({ID:uid('AST'),CODE:x[0],NAME:x[1],CATEGORY_ID:x[2],TYPE:category?category.TYPE:'ASET_TETAP',BRAND:x[3],MODEL:x[4],
-      SERIAL_NUMBER:'',ACQUISITION_YEAR:x[5],UNIT_PRICE:x[6],DESCRIPTION:'',ACTIVE:'TRUE',CREATED_AT:nowStr()});
+    db.ASSETS.push({
+      ID:uid('AST'),CODE:x[0],NAME:x[1],CATEGORY_ID:x[2],TYPE:category?category.TYPE:'ASET_TETAP',
+      BRAND:x[3],MODEL:x[4],SERIAL_NUMBER:'',ACQUISITION_YEAR:x[5],UNIT_PRICE:x[6],
+      DESCRIPTION:'',ACTIVE:'TRUE',
+      IS_FACILITY: x[7] ? 'TRUE' : 'FALSE',
+      FACILITY_FEE: x[8] || 0,
+      CAN_LEND: x[9] ? 'TRUE' : 'FALSE',
+      CREATED_AT:nowStr()
+    });
   });
 
   const rmMain = db.ROOMS[0].ID, rmAula = db.ROOMS[1].ID;
@@ -1002,6 +1012,10 @@ function formatCell(row,key){
     const map = {ASET_TETAP:'Aset Tetap',HABIS_PAKAI:'Habis Pakai'};
     return escapeHtml(map[String(value)] || String(value || '-'));
   }
+  if(key==='CAN_LEND' || key==='IS_FACILITY'){
+    const upper = String(value).toUpperCase();
+    return statusBadge(upper==='TRUE' ? 'AKTIF' : 'NONAKTIF');
+  }
   return escapeHtml(value===undefined||value===null?'':String(value));
 }
 
@@ -1176,7 +1190,7 @@ function filterAssets(){
 }
 function renderAssetTable(rows,canManage){
   document.getElementById('assetsTable').innerHTML = renderTableHtml(rows,
-    [['CODE','Kode'],['NAME','Nama'],['CATEGORY_ID','Kategori'],['TYPE','Tipe'],['BRAND','Merk'],['UNIT_PRICE','Harga'],['ACTIVE','Status']],
+    [['CODE','Kode'],['NAME','Nama'],['CATEGORY_ID','Kategori'],['TYPE','Tipe'],['CAN_LEND','Pinjam'],['IS_FACILITY','Fasilitas'],['FACILITY_FEE','Biaya Fasilitas'],['BRAND','Merk'],['UNIT_PRICE','Harga'],['ACTIVE','Status']],
     function(row){
       const unitCount = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===row.ID).length;
       let html = `<span class="badge badge-gray" style="margin-right:5px">${unitCount} unit</span>`;
@@ -1200,14 +1214,21 @@ function assetForm(row){
       <div><label>Nomor Seri</label><input id="f_SERIAL_NUMBER" value="${escapeHtml(row.SERIAL_NUMBER||'')}"></div>
       <div><label>Tahun Perolehan</label><input id="f_ACQUISITION_YEAR" type="number" value="${escapeHtml(row.ACQUISITION_YEAR||'')}"></div>
       <div><label>Harga Satuan</label><input id="f_UNIT_PRICE" type="number" min="0" value="${escapeHtml(row.UNIT_PRICE||'')}"></div>
+      <div><label>Biaya Fasilitas (Rp)</label><input id="f_FACILITY_FEE" type="number" min="0" value="${escapeHtml(row.FACILITY_FEE||0)}"></div>
+      <div style="display:flex;gap:12px;align-items:center"><label class="checkline" style="margin:0"><input id="f_IS_FACILITY" type="checkbox"> Is Fasilitas</label>
+        <label class="checkline" style="margin:0"><input id="f_CAN_LEND" type="checkbox"> Bisa Dipinjam</label></div>
       <div class="form-full"><label>Keterangan</label><textarea id="f_DESCRIPTION">${escapeHtml(row.DESCRIPTION||'')}</textarea></div>
     </div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveAssetForm('${row.ID||''}')">💾 Simpan</button>`
   ]);
-  // set type field initially
-  setTimeout(onAssetCategoryChange,50);
+  // set type field initially and checkbox states
+  setTimeout(function(){
+    onAssetCategoryChange();
+    document.getElementById('f_IS_FACILITY').checked = (row.IS_FACILITY && String(row.IS_FACILITY).toUpperCase()==='TRUE');
+    document.getElementById('f_CAN_LEND').checked = (row.CAN_LEND && String(row.CAN_LEND).toUpperCase()==='TRUE');
+  },50);
 }
 function onAssetCategoryChange(){
   const cid = getValue('f_CATEGORY_ID');
@@ -1226,6 +1247,11 @@ async function saveAssetForm(id){
     // assign TYPE from category
     const cat = DB.ASSET_CATEGORIES.find(c=>c.ID===data.CATEGORY_ID);
     data.TYPE = cat ? cat.TYPE : (data.TYPE||'ASET_TETAP');
+
+    // read new fields
+    data.FACILITY_FEE = Number(getValue('f_FACILITY_FEE'))||0;
+    data.IS_FACILITY = document.getElementById('f_IS_FACILITY').checked ? 'TRUE' : 'FALSE';
+    data.CAN_LEND = document.getElementById('f_CAN_LEND').checked ? 'TRUE' : 'FALSE';
 
     if(!data.NAME){ showToast('Nama aset wajib diisi.','warning'); return; }
 
@@ -1436,16 +1462,21 @@ function bookingForm(type){
   openModal(type==='ROOM'?'Booking Ruangan':'Peminjaman Barang', `
     <div class="form-grid">
       ${type==='ROOM' ? `<div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID" onchange="onBookingItemChange('ROOM')">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>`
-        : `<div class="form-full"><label>Unit Barang *</label><select id="b_ITEM_ID" onchange="onBookingItemChange('ASSET')">${selectOptions(DB.ASSET_UNITS.filter(u=>u.STATUS==='TERSEDIA'),'ID','INVENTORY_NUMBER',null,true)}</select></div>`}
+        : `<div class="form-full"><label>Unit Barang *</label><select id="b_ITEM_ID" onchange="onBookingItemChange('ASSET')">${selectOptions(DB.ASSET_UNITS.filter(u=>u.STATUS==='TERSEDIA' && (DB.ASSETS.find(a=>a.ID===u.ASSET_ID) && DB.ASSETS.find(a=>a.ID===u.ASSET_ID).CAN_LEND==='TRUE')),'ID','INVENTORY_NUMBER',null,true)}</select></div>`}
       <div><label>Tanggal *</label><input id="b_DATE" type="date" min="${todayStr()}"></div>
       <div></div>
       <div><label>Jam Mulai *</label><input id="b_START_TIME" type="time"></div>
       <div><label>Jam Selesai *</label><input id="b_END_TIME" type="time"></div>
-      <div><label>Harga Sewa Dasar (Rp)</label><input id="b_BASE_FEE" type="number" value="0"></div>
-      <div><label>Harga Fasilitas Tambahan (Rp)</label><input id="b_FACILITY_FEE" type="number" value="0"></div>
+      <div><label>Harga Sewa Dasar (Rp)</label><input id="b_BASE_FEE" type="number" value="${Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0}"></div>
+      <div><label>Biaya Fasilitas Tambahan (Rp)</label><input id="b_FACILITY_FEE" type="number" value="${Number(DB.APP_SETTINGS.DEFAULT_FACILITY_FEE)||0}"></div>
+      <div class="form-full" id="b_facilities_section" style="display:none">
+        <label>Tambahan: Pilih fasilitas tambahan</label>
+        <div id="b_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px"></div>
+      </div>
       <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="b_PURPOSE" placeholder="Contoh: Rapat koordinasi prodi"></textarea></div>
     </div>
     <div style="margin-top:8px;font-size:13px;color:#4B5468">Total estimasi: <span id="b_total_preview">-</span></div>
+    <div id="b_asset_info" style="margin-top:8px;font-size:13px;color:#4B5468"></div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveBooking('${type}')">📤 Ajukan</button>`
@@ -1456,10 +1487,25 @@ function bookingForm(type){
     const facEl = document.getElementById('b_FACILITY_FEE');
     function updatePreview(){ 
       const base = Number(baseEl.value)||0; const fac = Number(facEl.value)||0;
-      document.getElementById('b_total_preview').textContent = formatCurrency(base+fac);
+      // include selected facility asset fees
+      const selected = Array.from(document.querySelectorAll('.b_fac_chk:checked')).map(x=>x.dataset.fee?Number(x.dataset.fee):0);
+      const sumFacAssets = selected.reduce((s,v)=>s+v,0);
+      document.getElementById('b_total_preview').textContent = formatCurrency(base + fac + sumFacAssets);
     }
     if(baseEl) baseEl.addEventListener('input', updatePreview);
     if(facEl) facEl.addEventListener('input', updatePreview);
+
+    // build facilities list if ROOM mode
+    if(document.getElementById('b_facilities_list')){
+      const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
+      const listHtml = facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="b_fac_chk" type="checkbox" data-fee="${(a.FACILITY_FEE||0)}" value="${a.ID}"> ${escapeHtml(a.NAME)} (${formatCurrency(a.FACILITY_FEE||0)})</label>`).join('');
+      document.getElementById('b_facilities_list').innerHTML = listHtml;
+      if(facAssets.length) document.getElementById('b_facilities_section').style.display = 'block';
+      Array.from(document.querySelectorAll('.b_fac_chk')).forEach(el=>el.addEventListener('change', updatePreview));
+    }
+    // asset info update on change
+    const sel = document.getElementById('b_ITEM_ID');
+    if(sel) sel.addEventListener('change', function(){ onBookingItemChange(type); });
     updatePreview();
   },50);
 }
@@ -1467,21 +1513,33 @@ function onBookingItemChange(type){
   const itemId = getValue('b_ITEM_ID');
   if(type==='ROOM'){
     const room = DB.ROOMS.find(r=>r.ID===itemId);
-    document.getElementById('b_BASE_FEE').value = room ? (room.RENTAL_FEE || 0) : 0;
+    document.getElementById('b_BASE_FEE').value = room ? (room.RENTAL_FEE || Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0) : (Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0);
   }else{
     // for asset unit booking, base fee is 0 by default
-    document.getElementById('b_BASE_FEE').value = 0;
+    document.getElementById('b_BASE_FEE').value = Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0;
+    // show asset name and stock
+    const unit = DB.ASSET_UNITS.find(u=>u.ID===itemId);
+    if(unit){
+      const asset = DB.ASSETS.find(a=>a.ID===unit.ASSET_ID);
+      const stock = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===unit.ASSET_ID && u.STATUS==='TERSEDIA').length;
+      document.getElementById('b_asset_info').textContent = 'Nama barang: '+(asset?asset.NAME:'-') + ' · Stok tersedia: ' + stock;
+    }else{
+      document.getElementById('b_asset_info').textContent = '';
+    }
   }
+  // update preview total
   const base = Number(document.getElementById('b_BASE_FEE').value)||0;
   const fac = Number(document.getElementById('b_FACILITY_FEE').value)||0;
-  document.getElementById('b_total_preview').textContent = formatCurrency(base+fac);
+  const selected = Array.from(document.querySelectorAll('.b_fac_chk:checked')).map(x=>x.dataset.fee?Number(x.dataset.fee):0);
+  const sumFacAssets = selected.reduce((s,v)=>s+v,0);
+  document.getElementById('b_total_preview').textContent = formatCurrency(base + fac + sumFacAssets);
 }
 async function saveBooking(type){
   try{
     requirePerm('booking.create');
     const itemId = getValue('b_ITEM_ID'), date = getValue('b_DATE'), start = getValue('b_START_TIME'), end = getValue('b_END_TIME'), purpose = getValue('b_PURPOSE');
     const baseFee = Number(getValue('b_BASE_FEE'))||0;
-    const facilityFee = Number(getValue('b_FACILITY_FEE'))||0;
+    const customFacilityFee = Number(getValue('b_FACILITY_FEE'))||0;
     if(!itemId || !date || !start || !end || !purpose){ showToast('Semua kolom wajib diisi.','warning'); return; }
     if(start>=end){ showToast('Jam selesai harus lebih besar dari jam mulai.','warning'); return; }
 
@@ -1493,19 +1551,32 @@ async function saveBooking(type){
     if(conflict){ showToast('Jadwal bentrok dengan booking lain pada waktu tersebut.','warning'); return; }
 
     let itemName = '', base = baseFee;
+    let facilityFeeSum = customFacilityFee;
+    let facilityIds = [], facilityList = [];
     if(type==='ROOM'){
       const room = DB.ROOMS.find(r=>r.ID===itemId);
       itemName = room ? room.NAME : ''; base = baseFee || Number(room.RENTAL_FEE)||0;
+      // collect selected facility assets
+      const selected = Array.from(document.querySelectorAll('.b_fac_chk:checked')).map(x=>x.value);
+      facilityIds = selected.slice();
+      selected.forEach(id=>{
+        const a = DB.ASSETS.find(x=>x.ID===id);
+        if(a){ facilityFeeSum += Number(a.FACILITY_FEE)||0; facilityList.push(a.NAME); }
+      });
     }else{
       const unit = DB.ASSET_UNITS.find(u=>u.ID===itemId);
       itemName = unit ? (nameOf('ASSETS',unit.ASSET_ID)+' ('+unit.INVENTORY_NUMBER+')') : '';
+      // also include any parent asset facility fee? (we don't auto-add here)
+      // show asset info already done in form
     }
 
     const data = {
       ID:uid('BKG'), TYPE:type, ITEM_ID:itemId, ITEM_NAME:itemName,
       USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME,
       DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-      BASE_FEE:base, FACILITY_FEE:facilityFee, TOTAL_FEE:(Number(base)||0)+(Number(facilityFee)||0),
+      BASE_FEE:base, FACILITY_FEE:facilityFeeSum, TOTAL_FEE:(Number(base)||0)+(Number(facilityFeeSum)||0),
+      FACILITY_IDS: facilityIds.length ? JSON.stringify(facilityIds) : '',
+      FACILITY_LIST: facilityList.join(', '),
       STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
     };
     DB.BOOKINGS.push(data);
@@ -1992,12 +2063,14 @@ function renderApplicationSettings(){
         <button class="btn btn-primary btn-block" onclick="saveAppSettings()">💾 Simpan Pengaturan</button>
       </div>
       <div class="card">
-        <div class="card-title">Modul Aplikasi</div>
-        <div class="card-sub">Aktifkan / nonaktifkan modul sesuai kebutuhan. Menu akan otomatis disembunyikan bila dinonaktifkan.</div>
+        <div class="card-title">Modul & Biaya</div>
+        <div class="card-sub">Aktifkan / nonaktifkan modul dan default biaya.</div>
         <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_BOOKING" ${settingBool('ENABLE_BOOKING')?'checked':''}> Modul Booking (Ruangan & Barang)</label><br>
         <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_REPORT" ${settingBool('ENABLE_REPORT')?'checked':''}> Modul Laporan Kerusakan</label><br>
         <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_MAINTENANCE" ${settingBool('ENABLE_MAINTENANCE')?'checked':''}> Modul Maintenance</label>
-        <button class="btn btn-primary btn-block" style="margin-top:8px" onclick="saveModuleSettings()">💾 Simpan Modul</button>
+        <div style="margin-top:12px"><label>Default Harga Sewa Dasar (Rp)</label><input id="s_DEFAULT_BASE_FEE" type="number" value="${escapeHtml(s.DEFAULT_BASE_FEE||0)}"></div>
+        <div style="margin-top:8px"><label>Default Harga Fasilitas Tambahan (Rp)</label><input id="s_DEFAULT_FACILITY_FEE" type="number" value="${escapeHtml(s.DEFAULT_FACILITY_FEE||0)}"></div>
+        <button class="btn btn-primary btn-block" style="margin-top:8px" onclick="saveModuleSettings()">💾 Simpan Modul & Biaya</button>
       </div>
     </div>
     <div class="card">
@@ -2024,10 +2097,12 @@ async function saveModuleSettings(){
     DB.APP_SETTINGS.ENABLE_BOOKING = document.getElementById('s_ENABLE_BOOKING').checked ? 'TRUE':'FALSE';
     DB.APP_SETTINGS.ENABLE_REPORT = document.getElementById('s_ENABLE_REPORT').checked ? 'TRUE':'FALSE';
     DB.APP_SETTINGS.ENABLE_MAINTENANCE = document.getElementById('s_ENABLE_MAINTENANCE').checked ? 'TRUE':'FALSE';
-    await audit('UPDATE','APP_SETTINGS','','Update modul aplikasi');
+    DB.APP_SETTINGS.DEFAULT_BASE_FEE = Number(getValue('s_DEFAULT_BASE_FEE'))||0;
+    DB.APP_SETTINGS.DEFAULT_FACILITY_FEE = Number(getValue('s_DEFAULT_FACILITY_FEE'))||0;
+    await audit('UPDATE','APP_SETTINGS','','Update modul aplikasi & biaya');
     await saveDB();
     buildNavigation();
-    showToast('Konfigurasi modul disimpan.','success');
+    showToast('Konfigurasi modul & biaya disimpan.','success');
   }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
 async function confirmResetDemo(){
