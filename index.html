@@ -361,7 +361,8 @@ let STATE = {
   bookingTab:'ROOM',
   bookingStatusFilter:'',
   reportStatusFilter:'',
-  maintStatusFilter:''
+  maintStatusFilter:'',
+  assetCart:[]
 };
 
 /* =========================================================
@@ -379,6 +380,7 @@ const PERMISSIONS = [
   ['booking.create','Membuat Booking','booking'],
   ['booking.approve','Menyetujui/Menolak Booking','booking'],
   ['booking.cancel','Membatalkan Booking','booking'],
+  ['booking.checkout','Checkout & Pengembalian Barang (Scan Barcode)','booking'],
   ['report.view','Melihat Laporan','report'],
   ['report.create','Membuat Laporan','report'],
   ['report.assign','Menugaskan Laporan','report'],
@@ -396,7 +398,7 @@ const DEFAULT_ROLES = [
   {CODE:'ADMIN',NAME:'Administrator',DESCRIPTION:'Akses penuh ke seluruh modul.',ALL:true},
   {CODE:'PENGELOLA',NAME:'Pengelola Sarpras',DESCRIPTION:'Mengelola operasional sarana & prasarana sehari-hari.',
     PERMS:['dashboard.view','asset.view','asset.manage','asset_unit.view','asset_unit.manage','room.view','room.manage',
-      'booking.view','booking.approve','booking.cancel','report.view','report.assign','report.close',
+      'booking.view','booking.approve','booking.cancel','booking.checkout','report.view','report.assign','report.close',
       'maintenance.view','maintenance.create','maintenance.manage','audit.view']},
   {CODE:'PELAKSANA',NAME:'Pelaksana',DESCRIPTION:'Teknisi / petugas lapangan yang mengerjakan laporan & maintenance.',
     PERMS:['dashboard.view','asset_unit.view','room.view','report.view','report.process','maintenance.view','maintenance.manage']},
@@ -416,6 +418,7 @@ const MENUS = [
   {group:'Sarpras',code:'maintenance',name:'Maintenance',icon:'🔧',route:'maintenance',perm:'maintenance.view',setting:'ENABLE_MAINTENANCE'},
   {group:'Booking',code:'booking-room',name:'Booking Ruangan',icon:'🏢',route:'booking-room',perm:'booking.view',setting:'ENABLE_BOOKING'},
   {group:'Booking',code:'booking-asset',name:'Peminjaman Barang',icon:'📦',route:'booking-asset',perm:'booking.view',setting:'ENABLE_BOOKING'},
+  {group:'Booking',code:'booking-checkout',name:'Checkout Barang (Scan)',icon:'🔦',route:'booking-checkout',perm:'booking.checkout',setting:'ENABLE_BOOKING'},
   {group:'Master Data',code:'master-units',name:'Unit / Fakultas',icon:'🏫',route:'master-units',perm:'setting.manage'},
   {group:'Master Data',code:'master-buildings',name:'Gedung',icon:'🏢',route:'master-buildings',perm:'room.manage'},
   {group:'Master Data',code:'master-rooms',name:'Ruangan',icon:'🚪',route:'master-rooms',perm:'room.manage'},
@@ -558,6 +561,7 @@ async function buildDefaultDB(){
       ENABLE_MAINTENANCE:'TRUE',
       ENABLE_REPORT:'TRUE',
       DEFAULT_BASE_FEE:0,
+      DEFAULT_ASSET_BASE_FEE:0,
       DEFAULT_FACILITY_FEE:0
     },
     AUDIT_LOG:[],
@@ -607,11 +611,11 @@ async function buildDefaultDB(){
   const condBaik = db.ASSET_CONDITIONS[0].ID, condRingan = db.ASSET_CONDITIONS[1].ID;
 
   const assetsSeed = [
-    // [CODE, NAME, CATEGORY_ID, BRAND, MODEL, YEAR, UNIT_PRICE, IS_FACILITY, FACILITY_FEE, CAN_LEND]
-    ['AST-0001','Proyektor Epson EB-X500',catElk,'Epson','EB-X500',2022,7500000, true, 100000, false],
-    ['AST-0002','AC Split 1.5PK',catElk,'Daikin','FTV15',2021,4200000, false, 0, false],
-    ['AST-0003','Kursi Kuliah Lipat',catFrn,'Chitose','CL-01',2020,450000, false, 0, true],
-    ['AST-0004','Laptop Kerja',catElk,'Lenovo','ThinkPad E14',2023,11500000, false, 0, true]
+    // [CODE, NAME, CATEGORY_ID, BRAND, MODEL, YEAR, UNIT_PRICE, IS_FACILITY, FACILITY_FEE, CAN_LEND, RENTAL_FEE]
+    ['AST-0001','Proyektor Epson EB-X500',catElk,'Epson','EB-X500',2022,7500000, true, 100000, false, 0],
+    ['AST-0002','AC Split 1.5PK',catElk,'Daikin','FTV15',2021,4200000, false, 0, false, 0],
+    ['AST-0003','Kursi Kuliah Lipat',catFrn,'Chitose','CL-01',2020,450000, false, 0, true, 5000],
+    ['AST-0004','Laptop Kerja',catElk,'Lenovo','ThinkPad E14',2023,11500000, false, 0, true, 25000]
   ];
   assetsSeed.forEach(x=>{
     db.SEQ.ASSETS++;
@@ -623,6 +627,7 @@ async function buildDefaultDB(){
       IS_FACILITY: x[7] ? 'TRUE' : 'FALSE',
       FACILITY_FEE: x[8] || 0,
       CAN_LEND: x[9] ? 'TRUE' : 'FALSE',
+      RENTAL_FEE: x[10] || 0,
       CREATED_AT:nowStr()
     });
   });
@@ -632,7 +637,8 @@ async function buildDefaultDB(){
     [db.ASSETS[0].ID,'INV-2024-00001',condBaik,bA,rmMain,'TERSEDIA'],
     [db.ASSETS[1].ID,'INV-2024-00002',condBaik,bA,rmMain,'TERSEDIA'],
     [db.ASSETS[2].ID,'INV-2024-00003',condRingan,bB,rmAula,'TERSEDIA'],
-    [db.ASSETS[3].ID,'INV-2024-00004',condBaik,bA,'','DIPAKAI']
+    [db.ASSETS[2].ID,'INV-2024-00005',condBaik,bB,rmAula,'TERSEDIA'],
+    [db.ASSETS[3].ID,'INV-2024-00004',condBaik,bA,'','TERSEDIA']
   ].forEach(x=>{
     db.SEQ.ASSET_UNITS++;
     db.ASSET_UNITS.push({ID:uid('AUN'),ASSET_ID:x[0],INVENTORY_NUMBER:x[1],CONDITION_ID:x[2],
@@ -839,6 +845,7 @@ function navigate(route){
     'maintenance':renderMaintenance,
     'booking-room':()=>renderBookings('ROOM'),
     'booking-asset':()=>renderBookings('ASSET'),
+    'booking-checkout':renderCheckout,
     'master-units':()=>renderGeneric('UNITS'),
     'master-buildings':()=>renderGeneric('BUILDINGS'),
     'master-rooms':()=>renderGeneric('ROOMS'),
@@ -864,7 +871,8 @@ const ROUTE_SUBTITLES = {
   'reports':'Laporan kerusakan & kebutuhan sarpras',
   'maintenance':'Jadwal & riwayat pemeliharaan',
   'booking-room':'Permohonan pemakaian ruangan',
-  'booking-asset':'Peminjaman barang inventaris',
+  'booking-asset':'Peminjaman barang inventaris (bisa lebih dari 1 barang)',
+  'booking-checkout':'Scan barcode untuk mengeluarkan / mengembalikan barang',
   'master-units':'Unit / fakultas pengguna',
   'master-buildings':'Data gedung kampus',
   'master-rooms':'Data ruangan per gedung',
@@ -941,6 +949,7 @@ function stat(label,value,icon,bg,fg){
 
 const STATUS_COLOR = {
   MENUNGGU:'#D97706',DISETUJUI:'#16A34A',DITOLAK:'#DC2626',SELESAI:'#4F46E5',DIBATALKAN:'#69738A',
+  DIAMBIL:'#0284C7',
   BARU:'#4F46E5',DITINJAU:'#7C3AED',DITUGASKAN:'#D97706',DIPROSES:'#EA580C',DITUTUP:'#374151',
   TERJADWAL:'#4F46E5',DITUNDA:'#69738A'
 };
@@ -1024,7 +1033,7 @@ function statusBadge(value){
   const upper = text.toUpperCase();
   let cls = 'badge-gray';
   if(['AKTIF','ACTIVE','TRUE','APPROVED','DISETUJUI','SELESAI','TERSEDIA','BAIK'].includes(upper)) cls='badge-green';
-  else if(['MENUNGGU','PENDING','DIPROSES','MAINTENANCE','DITINJAU','DITUGASKAN','TERJADWAL'].includes(upper)) cls='badge-yellow';
+  else if(['MENUNGGU','PENDING','DIPROSES','MAINTENANCE','DITINJAU','DITUGASKAN','TERJADWAL','DIAMBIL','DIPINJAM'].includes(upper)) cls='badge-yellow';
   else if(['NONAKTIF','INACTIVE','FALSE','DITOLAK','REJECTED','RUSAK','RUSAK_BERAT','HILANG','DIBATALKAN','DITUTUP'].includes(upper)) cls='badge-red';
   else cls='badge-blue';
   const label = {TRUE:'Aktif',FALSE:'Nonaktif'}[upper] || text;
@@ -1190,7 +1199,7 @@ function filterAssets(){
 }
 function renderAssetTable(rows,canManage){
   document.getElementById('assetsTable').innerHTML = renderTableHtml(rows,
-    [['CODE','Kode'],['NAME','Nama'],['CATEGORY_ID','Kategori'],['TYPE','Tipe'],['CAN_LEND','Pinjam'],['IS_FACILITY','Fasilitas'],['FACILITY_FEE','Biaya Fasilitas'],['BRAND','Merk'],['UNIT_PRICE','Harga'],['ACTIVE','Status']],
+    [['CODE','Kode'],['NAME','Nama'],['CATEGORY_ID','Kategori'],['TYPE','Tipe'],['CAN_LEND','Bisa Dipinjam'],['RENTAL_FEE','Harga Sewa/Pinjam'],['IS_FACILITY','Fasilitas Tambahan'],['FACILITY_FEE','Biaya Fasilitas'],['BRAND','Merk'],['UNIT_PRICE','Harga'],['ACTIVE','Status']],
     function(row){
       const unitCount = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===row.ID).length;
       let html = `<span class="badge badge-gray" style="margin-right:5px">${unitCount} unit</span>`;
@@ -1213,12 +1222,14 @@ function assetForm(row){
       <div><label>Model</label><input id="f_MODEL" value="${escapeHtml(row.MODEL||'')}"></div>
       <div><label>Nomor Seri</label><input id="f_SERIAL_NUMBER" value="${escapeHtml(row.SERIAL_NUMBER||'')}"></div>
       <div><label>Tahun Perolehan</label><input id="f_ACQUISITION_YEAR" type="number" value="${escapeHtml(row.ACQUISITION_YEAR||'')}"></div>
-      <div><label>Harga Satuan</label><input id="f_UNIT_PRICE" type="number" min="0" value="${escapeHtml(row.UNIT_PRICE||'')}"></div>
-      <div><label>Biaya Fasilitas (Rp)</label><input id="f_FACILITY_FEE" type="number" min="0" value="${escapeHtml(row.FACILITY_FEE||0)}"></div>
-      <div style="display:flex;gap:12px;align-items:center"><label class="checkline" style="margin:0"><input id="f_IS_FACILITY" type="checkbox"> Is Fasilitas</label>
-        <label class="checkline" style="margin:0"><input id="f_CAN_LEND" type="checkbox"> Bisa Dipinjam</label></div>
+      <div><label>Harga Satuan (nilai aset)</label><input id="f_UNIT_PRICE" type="number" min="0" value="${escapeHtml(row.UNIT_PRICE||'')}"></div>
+      <div style="display:flex;align-items:flex-end"><label class="checkline" style="margin:0"><input id="f_CAN_LEND" type="checkbox" onchange="onAssetCanLendChange()"> Bisa Dipinjamkan</label></div>
+      <div id="f_rentalFeeWrap"><label>Harga Sewa/Pinjam per unit (Rp)</label><input id="f_RENTAL_FEE" type="number" min="0" value="${escapeHtml(row.RENTAL_FEE||0)}"></div>
+      <div style="display:flex;align-items:flex-end"><label class="checkline" style="margin:0"><input id="f_IS_FACILITY" type="checkbox" onchange="onAssetIsFacilityChange()"> Fasilitas Tambahan (mis. AC, Sound System)</label></div>
+      <div id="f_facilityFeeWrap"><label>Biaya Tambahan Pemakaian Fasilitas (Rp)</label><input id="f_FACILITY_FEE" type="number" min="0" value="${escapeHtml(row.FACILITY_FEE||0)}"></div>
       <div class="form-full"><label>Keterangan</label><textarea id="f_DESCRIPTION">${escapeHtml(row.DESCRIPTION||'')}</textarea></div>
     </div>
+    <div class="hint" style="margin-top:6px">"Bisa Dipinjamkan" mengatur apakah aset ini muncul di menu Peminjaman Barang. "Fasilitas Tambahan" mengatur apakah aset ini bisa dipilih sebagai tambahan biaya saat booking ruangan/barang (contoh: AC, Sound System).</div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveAssetForm('${row.ID||''}')">💾 Simpan</button>`
@@ -1228,12 +1239,22 @@ function assetForm(row){
     onAssetCategoryChange();
     document.getElementById('f_IS_FACILITY').checked = (row.IS_FACILITY && String(row.IS_FACILITY).toUpperCase()==='TRUE');
     document.getElementById('f_CAN_LEND').checked = (row.CAN_LEND && String(row.CAN_LEND).toUpperCase()==='TRUE');
+    onAssetCanLendChange();
+    onAssetIsFacilityChange();
   },50);
 }
 function onAssetCategoryChange(){
   const cid = getValue('f_CATEGORY_ID');
   const cat = DB.ASSET_CATEGORIES.find(c=>c.ID===cid);
   document.getElementById('f_TYPE').value = cat ? cat.TYPE : '';
+}
+function onAssetCanLendChange(){
+  const on = document.getElementById('f_CAN_LEND').checked;
+  document.getElementById('f_rentalFeeWrap').style.display = on ? '' : 'none';
+}
+function onAssetIsFacilityChange(){
+  const on = document.getElementById('f_IS_FACILITY').checked;
+  document.getElementById('f_facilityFeeWrap').style.display = on ? '' : 'none';
 }
 async function saveAssetForm(id){
   try{
@@ -1252,6 +1273,7 @@ async function saveAssetForm(id){
     data.FACILITY_FEE = Number(getValue('f_FACILITY_FEE'))||0;
     data.IS_FACILITY = document.getElementById('f_IS_FACILITY').checked ? 'TRUE' : 'FALSE';
     data.CAN_LEND = document.getElementById('f_CAN_LEND').checked ? 'TRUE' : 'FALSE';
+    data.RENTAL_FEE = Number(getValue('f_RENTAL_FEE'))||0;
 
     if(!data.NAME){ showToast('Nama aset wajib diisi.','warning'); return; }
 
@@ -1302,7 +1324,7 @@ function renderAssetUnits(){
   const canManage = hasPermission(STATE.currentUser,'asset_unit.manage');
   content.innerHTML = `
     <div class="page-title">🏷️ Unit Inventaris</div>
-    <div class="page-subtitle">Setiap barang fisik mempunyai identitas inventaris sendiri.</div>
+    <div class="page-subtitle">Setiap barang fisik mempunyai identitas inventaris sendiri. Nomor inventaris juga berfungsi sebagai kode barcode.</div>
     <div class="card">
       <div class="toolbar">
         <div class="toolbar-left"><input id="unitSearch" class="search-box" placeholder="🔎 Cari inventaris..." oninput="filterAssetUnits()"></div>
@@ -1323,7 +1345,7 @@ function filterAssetUnits(){
 }
 function renderAssetUnitTable(rows,canManage){
   document.getElementById('unitsTable').innerHTML = renderTableHtml(rows,
-    [['INVENTORY_NUMBER','No. Inventaris'],['ASSET_ID','Aset'],['CONDITION_ID','Kondisi'],['BUILDING_ID','Gedung'],['ROOM_ID','Ruangan'],['STATUS','Status']],
+    [['INVENTORY_NUMBER','No. Inventaris / Barcode'],['ASSET_ID','Aset'],['CONDITION_ID','Kondisi'],['BUILDING_ID','Gedung'],['ROOM_ID','Ruangan'],['STATUS','Status']],
     function(row){
       if(!canManage) return '<span style="color:#9AA3B5;font-size:11px">Lihat saja</span>';
       return `<button class="btn btn-light btn-sm" onclick='assetUnitForm(${safeJson(row)})'>✏️</button>
@@ -1335,7 +1357,7 @@ function assetUnitForm(row){
   openModal(row.ID?'Edit Unit Inventaris':'Tambah Unit Inventaris', `
     <div class="form-grid">
       <div class="form-full"><label>Aset *</label><select id="u_ASSET_ID">${selectOptions(DB.ASSETS,'ID','NAME',row.ASSET_ID,true)}</select></div>
-      <div><label>No. Inventaris</label><input id="u_INVENTORY_NUMBER" value="${escapeHtml(row.INVENTORY_NUMBER||'')}" placeholder="Biarkan kosong untuk auto-generate"></div>
+      <div><label>No. Inventaris (Barcode)</label><input id="u_INVENTORY_NUMBER" value="${escapeHtml(row.INVENTORY_NUMBER||'')}" placeholder="Biarkan kosong untuk auto-generate"></div>
       <div><label>Kondisi</label><select id="u_CONDITION_ID">${selectOptions(DB.ASSET_CONDITIONS,'ID','NAME',row.CONDITION_ID,true)}</select></div>
       <div><label>Gedung</label><select id="u_BUILDING_ID" onchange="onUnitBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',row.BUILDING_ID,true)}</select></div>
       <div><label>Ruangan</label><select id="u_ROOM_ID">${roomOptionsForBuilding(row.BUILDING_ID,row.ROOM_ID)}</select></div>
@@ -1406,11 +1428,12 @@ async function assetUnitDelete(id){
 function renderBookings(type){
   STATE.bookingTab = type;
   STATE.bookingStatusFilter = '';
+  STATE.assetCart = [];
   const content = document.getElementById('content');
   const canCreate = hasPermission(STATE.currentUser,'booking.create');
   content.innerHTML = `
     <div class="page-title">${type==='ROOM'?'🏢 Booking Ruangan':'📦 Peminjaman Barang'}</div>
-    <div class="page-subtitle">${type==='ROOM'?'Permohonan pemakaian ruangan.':'Permohonan peminjaman unit inventaris.'}</div>
+    <div class="page-subtitle">${type==='ROOM'?'Permohonan pemakaian ruangan.':'Permohonan peminjaman barang — bisa memilih lebih dari satu barang sekaligus.'}</div>
     <div class="card">
       <div class="tabs" id="bookingStatusTabs"></div>
       <div class="toolbar">
@@ -1424,8 +1447,10 @@ function renderBookings(type){
   renderBookingTable();
 }
 function renderBookingStatusTabs(){
-  const statuses = ['','MENUNGGU','DISETUJUI','DITOLAK','SELESAI','DIBATALKAN'];
-  const labels = {'':'Semua',MENUNGGU:'Menunggu',DISETUJUI:'Disetujui',DITOLAK:'Ditolak',SELESAI:'Selesai',DIBATALKAN:'Dibatalkan'};
+  const statuses = STATE.bookingTab==='ASSET'
+    ? ['','MENUNGGU','DISETUJUI','DIAMBIL','SELESAI','DITOLAK','DIBATALKAN']
+    : ['','MENUNGGU','DISETUJUI','DITOLAK','SELESAI','DIBATALKAN'];
+  const labels = {'':'Semua',MENUNGGU:'Menunggu',DISETUJUI:'Disetujui',DIAMBIL:'Sudah Diambil',DITOLAK:'Ditolak',SELESAI:'Selesai',DIBATALKAN:'Dibatalkan'};
   document.getElementById('bookingStatusTabs').innerHTML = statuses.map(s=>
     `<div class="tab ${STATE.bookingStatusFilter===s?'active':''}" onclick="setBookingFilter('${s}')">${labels[s]}</div>`
   ).join('');
@@ -1444,6 +1469,7 @@ function renderBookingTable(){
     function(row){
       let html='';
       const isOwner = STATE.currentUser.ID===row.USER_ID;
+      if(type==='ASSET') html += `<button class="btn btn-light btn-sm" onclick='assetBookingDetail(${safeJson(row)})'>🔍</button>`;
       if(row.STATUS==='MENUNGGU' && canApprove){
         html += `<button class="btn btn-success btn-sm" onclick="setBookingStatus('${row.ID}','DISETUJUI')">✅</button>
           <button class="btn btn-danger btn-sm" onclick="setBookingStatus('${row.ID}','DITOLAK')">✖️</button>`;
@@ -1451,51 +1477,47 @@ function renderBookingTable(){
       if(['MENUNGGU','DISETUJUI'].includes(row.STATUS) && (canCancel || isOwner)){
         html += `<button class="btn btn-light btn-sm" onclick="setBookingStatus('${row.ID}','DIBATALKAN')">Batal</button>`;
       }
-      if(row.STATUS==='DISETUJUI' && canApprove){
+      if(row.STATUS==='DISETUJUI' && type==='ROOM' && canApprove){
         html += `<button class="btn btn-light btn-sm" onclick="setBookingStatus('${row.ID}','SELESAI')">Selesai</button>`;
       }
       if(!html) html = '<span style="color:#9AA3B5;font-size:11px">-</span>';
       return html;
     });
 }
+
+/* --- Room booking form (unchanged flow) --- */
 function bookingForm(type){
-  openModal(type==='ROOM'?'Booking Ruangan':'Peminjaman Barang', `
+  if(type==='ASSET'){ assetBookingForm(); return; }
+  openModal('Booking Ruangan', `
     <div class="form-grid">
-      ${type==='ROOM' ? `<div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID" onchange="onBookingItemChange('ROOM')">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>`
-        : `<div class="form-full"><label>Unit Barang *</label><select id="b_ITEM_ID" onchange="onBookingItemChange('ASSET')">${selectOptions(DB.ASSET_UNITS.filter(u=>u.STATUS==='TERSEDIA' && (DB.ASSETS.find(a=>a.ID===u.ASSET_ID) && DB.ASSETS.find(a=>a.ID===u.ASSET_ID).CAN_LEND==='TRUE')),'ID','INVENTORY_NUMBER',null,true)}</select></div>`}
+      <div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID" onchange="onBookingItemChange('ROOM')">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>
       <div><label>Tanggal *</label><input id="b_DATE" type="date" min="${todayStr()}"></div>
       <div></div>
       <div><label>Jam Mulai *</label><input id="b_START_TIME" type="time"></div>
       <div><label>Jam Selesai *</label><input id="b_END_TIME" type="time"></div>
-      <div><label>Harga Sewa Dasar (Rp)</label><input id="b_BASE_FEE" type="number" value="${Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0}"></div>
-      <div><label>Biaya Fasilitas Tambahan (Rp)</label><input id="b_FACILITY_FEE" type="number" value="${Number(DB.APP_SETTINGS.DEFAULT_FACILITY_FEE)||0}"></div>
+      <div><label>Harga Sewa Dasar Ruangan (Rp)</label><input id="b_BASE_FEE" type="number" value="${Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0}"></div>
+      <div></div>
       <div class="form-full" id="b_facilities_section" style="display:none">
-        <label>Tambahan: Pilih fasilitas tambahan</label>
+        <label>Tambahan biaya pemakaian fasilitas (AC, Sound System, dll)</label>
         <div id="b_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px"></div>
       </div>
       <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="b_PURPOSE" placeholder="Contoh: Rapat koordinasi prodi"></textarea></div>
     </div>
     <div style="margin-top:8px;font-size:13px;color:#4B5468">Total estimasi: <span id="b_total_preview">-</span></div>
-    <div id="b_asset_info" style="margin-top:8px;font-size:13px;color:#4B5468"></div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
-    `<button class="btn btn-primary" onclick="saveBooking('${type}')">📤 Ajukan</button>`
+    `<button class="btn btn-primary" onclick="saveBooking('ROOM')">📤 Ajukan</button>`
   ]);
   setTimeout(function(){
-    onBookingItemChange(type);
+    onBookingItemChange('ROOM');
     const baseEl = document.getElementById('b_BASE_FEE');
-    const facEl = document.getElementById('b_FACILITY_FEE');
-    function updatePreview(){ 
-      const base = Number(baseEl.value)||0; const fac = Number(facEl.value)||0;
-      // include selected facility asset fees
+    function updatePreview(){
+      const base = Number(baseEl.value)||0;
       const selected = Array.from(document.querySelectorAll('.b_fac_chk:checked')).map(x=>x.dataset.fee?Number(x.dataset.fee):0);
       const sumFacAssets = selected.reduce((s,v)=>s+v,0);
-      document.getElementById('b_total_preview').textContent = formatCurrency(base + fac + sumFacAssets);
+      document.getElementById('b_total_preview').textContent = formatCurrency(base + sumFacAssets);
     }
     if(baseEl) baseEl.addEventListener('input', updatePreview);
-    if(facEl) facEl.addEventListener('input', updatePreview);
-
-    // build facilities list if ROOM mode
     if(document.getElementById('b_facilities_list')){
       const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
       const listHtml = facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="b_fac_chk" type="checkbox" data-fee="${(a.FACILITY_FEE||0)}" value="${a.ID}"> ${escapeHtml(a.NAME)} (${formatCurrency(a.FACILITY_FEE||0)})</label>`).join('');
@@ -1503,89 +1525,179 @@ function bookingForm(type){
       if(facAssets.length) document.getElementById('b_facilities_section').style.display = 'block';
       Array.from(document.querySelectorAll('.b_fac_chk')).forEach(el=>el.addEventListener('change', updatePreview));
     }
-    // asset info update on change
     const sel = document.getElementById('b_ITEM_ID');
-    if(sel) sel.addEventListener('change', function(){ onBookingItemChange(type); });
+    if(sel) sel.addEventListener('change', function(){ onBookingItemChange('ROOM'); updatePreview(); });
     updatePreview();
   },50);
 }
 function onBookingItemChange(type){
   const itemId = getValue('b_ITEM_ID');
-  if(type==='ROOM'){
-    const room = DB.ROOMS.find(r=>r.ID===itemId);
-    document.getElementById('b_BASE_FEE').value = room ? (room.RENTAL_FEE || Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0) : (Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0);
-  }else{
-    // for asset unit booking, base fee is 0 by default
-    document.getElementById('b_BASE_FEE').value = Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0;
-    // show asset name and stock
-    const unit = DB.ASSET_UNITS.find(u=>u.ID===itemId);
-    if(unit){
-      const asset = DB.ASSETS.find(a=>a.ID===unit.ASSET_ID);
-      const stock = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===unit.ASSET_ID && u.STATUS==='TERSEDIA').length;
-      document.getElementById('b_asset_info').textContent = 'Nama barang: '+(asset?asset.NAME:'-') + ' · Stok tersedia: ' + stock;
-    }else{
-      document.getElementById('b_asset_info').textContent = '';
-    }
-  }
-  // update preview total
-  const base = Number(document.getElementById('b_BASE_FEE').value)||0;
-  const fac = Number(document.getElementById('b_FACILITY_FEE').value)||0;
-  const selected = Array.from(document.querySelectorAll('.b_fac_chk:checked')).map(x=>x.dataset.fee?Number(x.dataset.fee):0);
-  const sumFacAssets = selected.reduce((s,v)=>s+v,0);
-  document.getElementById('b_total_preview').textContent = formatCurrency(base + fac + sumFacAssets);
+  const room = DB.ROOMS.find(r=>r.ID===itemId);
+  document.getElementById('b_BASE_FEE').value = room ? (room.RENTAL_FEE || Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0) : (Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0);
 }
-async function saveBooking(type){
+
+/* --- Asset (barang) booking: multi-item cart --- */
+function assetBookingForm(){
+  STATE.assetCart = [];
+  const loanable = DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE');
+  openModal('Peminjaman Barang (Bisa Pilih Lebih dari 1)', `
+    <div class="form-grid">
+      <div><label>Tanggal *</label><input id="ab_DATE" type="date" min="${todayStr()}"></div>
+      <div></div>
+      <div><label>Jam Mulai *</label><input id="ab_START_TIME" type="time"></div>
+      <div><label>Jam Selesai *</label><input id="ab_END_TIME" type="time"></div>
+    </div>
+    <div class="form-group" style="margin-top:10px">
+      <label>Pilih Barang</label>
+      <div style="display:flex;gap:8px">
+        <select id="ab_ASSET_SELECT" style="flex:1">${selectOptions(loanable,'ID','NAME',null,true)}</select>
+        <input id="ab_ASSET_QTY" type="number" min="1" value="1" style="width:80px">
+        <button type="button" class="btn btn-light" onclick="addAssetToCart()">+ Tambah</button>
+      </div>
+      <div class="hint" id="ab_stock_hint"></div>
+    </div>
+    <div id="ab_cart_list" style="margin:10px 0"></div>
+    <div class="form-full" id="ab_facilities_section" style="display:none">
+      <label>Tambahan biaya pemakaian fasilitas (AC, Sound System, dll)</label>
+      <div id="ab_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px"></div>
+    </div>
+    <div class="form-group"><label>Tujuan / Keperluan *</label><textarea id="ab_PURPOSE" placeholder="Contoh: Peminjaman untuk acara seminar"></textarea></div>
+    <div style="margin-top:8px;font-size:13px;color:#4B5468">Total estimasi: <span id="ab_total_preview">Rp0</span></div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
+    `<button class="btn btn-primary" onclick="saveAssetBooking()">📤 Ajukan</button>`
+  ]);
+  setTimeout(function(){
+    const sel = document.getElementById('ab_ASSET_SELECT');
+    if(sel) sel.addEventListener('change', updateAssetStockHint);
+    updateAssetStockHint();
+    renderAssetCart();
+    if(document.getElementById('ab_facilities_list')){
+      const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
+      const listHtml = facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="ab_fac_chk" type="checkbox" data-fee="${(a.FACILITY_FEE||0)}" value="${a.ID}"> ${escapeHtml(a.NAME)} (${formatCurrency(a.FACILITY_FEE||0)})</label>`).join('');
+      document.getElementById('ab_facilities_list').innerHTML = listHtml;
+      if(facAssets.length) document.getElementById('ab_facilities_section').style.display = 'block';
+      Array.from(document.querySelectorAll('.ab_fac_chk')).forEach(el=>el.addEventListener('change', renderAssetCart));
+    }
+  },50);
+}
+function assetAvailableStock(assetId){
+  return DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId).length;
+}
+function updateAssetStockHint(){
+  const assetId = getValue('ab_ASSET_SELECT');
+  const hint = document.getElementById('ab_stock_hint');
+  if(!assetId){ hint.textContent=''; return; }
+  const asset = DB.ASSETS.find(a=>a.ID===assetId);
+  const stock = assetAvailableStock(assetId);
+  hint.textContent = 'Total unit terdaftar: '+stock+' · Harga sewa/pinjam: '+formatCurrency(asset?asset.RENTAL_FEE||0:0)+' /unit';
+}
+function addAssetToCart(){
+  const assetId = getValue('ab_ASSET_SELECT');
+  const qty = Number(getValue('ab_ASSET_QTY'))||1;
+  if(!assetId){ showToast('Pilih barang terlebih dahulu.','warning'); return; }
+  const asset = DB.ASSETS.find(a=>a.ID===assetId);
+  const existing = STATE.assetCart.find(c=>c.ASSET_ID===assetId);
+  if(existing) existing.QTY += qty;
+  else STATE.assetCart.push({ASSET_ID:assetId,ASSET_NAME:asset.NAME,QTY:qty,FEE_PER_UNIT:Number(asset.RENTAL_FEE)||0});
+  renderAssetCart();
+}
+function removeAssetFromCart(assetId){
+  STATE.assetCart = STATE.assetCart.filter(c=>c.ASSET_ID!==assetId);
+  renderAssetCart();
+}
+function renderAssetCart(){
+  const el = document.getElementById('ab_cart_list');
+  if(!el) return;
+  if(!STATE.assetCart.length){
+    el.innerHTML = '<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>';
+  }else{
+    el.innerHTML = `<div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th>Harga/Unit</th><th>Subtotal</th><th></th></tr></thead><tbody>
+      ${STATE.assetCart.map(c=>`<tr>
+        <td>${escapeHtml(c.ASSET_NAME)}</td>
+        <td>${c.QTY}</td>
+        <td>${escapeHtml(formatCurrency(c.FEE_PER_UNIT))}</td>
+        <td>${escapeHtml(formatCurrency(c.QTY*c.FEE_PER_UNIT))}</td>
+        <td><button type="button" class="btn btn-danger btn-sm" onclick="removeAssetFromCart('${c.ASSET_ID}')">🗑️</button></td>
+      </tr>`).join('')}
+      </tbody></table></div>`;
+  }
+  const cartTotal = STATE.assetCart.reduce((s,c)=>s+(c.QTY*c.FEE_PER_UNIT),0);
+  const selected = Array.from(document.querySelectorAll('.ab_fac_chk:checked')).map(x=>x.dataset.fee?Number(x.dataset.fee):0);
+  const facTotal = selected.reduce((s,v)=>s+v,0);
+  const totalEl = document.getElementById('ab_total_preview');
+  if(totalEl) totalEl.textContent = formatCurrency(cartTotal+facTotal);
+}
+async function saveAssetBooking(){
   try{
     requirePerm('booking.create');
-    const itemId = getValue('b_ITEM_ID'), date = getValue('b_DATE'), start = getValue('b_START_TIME'), end = getValue('b_END_TIME'), purpose = getValue('b_PURPOSE');
-    const baseFee = Number(getValue('b_BASE_FEE'))||0;
-    const customFacilityFee = Number(getValue('b_FACILITY_FEE'))||0;
-    if(!itemId || !date || !start || !end || !purpose){ showToast('Semua kolom wajib diisi.','warning'); return; }
+    const date = getValue('ab_DATE'), start = getValue('ab_START_TIME'), end = getValue('ab_END_TIME'), purpose = getValue('ab_PURPOSE');
+    if(!date || !start || !end || !purpose){ showToast('Tanggal, jam, dan keperluan wajib diisi.','warning'); return; }
     if(start>=end){ showToast('Jam selesai harus lebih besar dari jam mulai.','warning'); return; }
+    if(!STATE.assetCart.length){ showToast('Pilih minimal 1 barang untuk dipinjam.','warning'); return; }
 
-    const conflict = DB.BOOKINGS.some(function(b){
-      if(!['MENUNGGU','DISETUJUI'].includes(b.STATUS)) return false;
-      if(b.TYPE!==type || b.ITEM_ID!==itemId || b.DATE!==date) return false;
-      return start < b.END_TIME && end > b.START_TIME;
-    });
-    if(conflict){ showToast('Jadwal bentrok dengan booking lain pada waktu tersebut.','warning'); return; }
-
-    let itemName = '', base = baseFee;
-    let facilityFeeSum = customFacilityFee;
-    let facilityIds = [], facilityList = [];
-    if(type==='ROOM'){
-      const room = DB.ROOMS.find(r=>r.ID===itemId);
-      itemName = room ? room.NAME : ''; base = baseFee || Number(room.RENTAL_FEE)||0;
-      // collect selected facility assets
-      const selected = Array.from(document.querySelectorAll('.b_fac_chk:checked')).map(x=>x.value);
-      facilityIds = selected.slice();
-      selected.forEach(id=>{
-        const a = DB.ASSETS.find(x=>x.ID===id);
-        if(a){ facilityFeeSum += Number(a.FACILITY_FEE)||0; facilityList.push(a.NAME); }
-      });
-    }else{
-      const unit = DB.ASSET_UNITS.find(u=>u.ID===itemId);
-      itemName = unit ? (nameOf('ASSETS',unit.ASSET_ID)+' ('+unit.INVENTORY_NUMBER+')') : '';
-      // also include any parent asset facility fee? (we don't auto-add here)
-      // show asset info already done in form
+    // check stock availability against overlapping active asset bookings
+    for(const item of STATE.assetCart){
+      const totalStock = assetAvailableStock(item.ASSET_ID);
+      const reserved = DB.BOOKINGS.filter(b=>b.TYPE==='ASSET' && ['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS) && b.DATE===date)
+        .filter(b=> start < b.END_TIME && end > b.START_TIME)
+        .reduce((sum,b)=>{
+          const found = (b.ITEMS||[]).find(i=>i.ASSET_ID===item.ASSET_ID);
+          return sum + (found ? found.QTY : 0);
+        },0);
+      if(reserved + item.QTY > totalStock){
+        showToast('Stok "'+item.ASSET_NAME+'" tidak mencukupi pada jadwal tersebut. Tersedia: '+Math.max(totalStock-reserved,0)+'.','warning');
+        return;
+      }
     }
 
+    const facilityChecks = Array.from(document.querySelectorAll('.ab_fac_chk:checked')).map(x=>x.value);
+    let facilityFeeSum = 0, facilityList = [];
+    facilityChecks.forEach(id=>{
+      const a = DB.ASSETS.find(x=>x.ID===id);
+      if(a){ facilityFeeSum += Number(a.FACILITY_FEE)||0; facilityList.push(a.NAME); }
+    });
+
+    const items = STATE.assetCart.map(c=>({ASSET_ID:c.ASSET_ID,ASSET_NAME:c.ASSET_NAME,QTY:c.QTY,FEE_PER_UNIT:c.FEE_PER_UNIT,ISSUED_UNIT_IDS:[],RETURNED_UNIT_IDS:[]}));
+    const itemsTotal = items.reduce((s,i)=>s+(i.QTY*i.FEE_PER_UNIT),0);
+    const itemName = items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
+
     const data = {
-      ID:uid('BKG'), TYPE:type, ITEM_ID:itemId, ITEM_NAME:itemName,
+      ID:uid('BKG'), TYPE:'ASSET', ITEM_ID:'', ITEM_NAME:itemName,
       USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME,
       DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-      BASE_FEE:base, FACILITY_FEE:facilityFeeSum, TOTAL_FEE:(Number(base)||0)+(Number(facilityFeeSum)||0),
-      FACILITY_IDS: facilityIds.length ? JSON.stringify(facilityIds) : '',
+      ITEMS: items,
+      BASE_FEE:itemsTotal, FACILITY_FEE:facilityFeeSum, TOTAL_FEE:itemsTotal+facilityFeeSum,
       FACILITY_LIST: facilityList.join(', '),
       STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
     };
     DB.BOOKINGS.push(data);
-    await audit('CREATE','BOOKINGS',data.ID,'Booking baru: '+itemName);
+    await audit('CREATE','BOOKINGS',data.ID,'Peminjaman barang baru: '+itemName);
     await saveDB();
     closeModal();
-    showToast('Booking berhasil diajukan.','success');
-    renderBookings(type);
+    showToast('Peminjaman barang berhasil diajukan.','success');
+    renderBookings('ASSET');
   }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+function assetBookingDetail(row){
+  const items = row.ITEMS || [];
+  const rowsHtml = items.map(i=>{
+    const issued = (i.ISSUED_UNIT_IDS||[]).length;
+    const returned = (i.RETURNED_UNIT_IDS||[]).length;
+    return `<tr><td>${escapeHtml(i.ASSET_NAME)}</td><td>${i.QTY}</td><td>${issued}</td><td>${returned}</td></tr>`;
+  }).join('');
+  openModal('Detail Peminjaman', `
+    <div class="kv"><span>Status</span>${statusBadge(row.STATUS)}</div>
+    <div class="kv"><span>Pemohon</span><b>${escapeHtml(row.USER_NAME)}</b></div>
+    <div class="kv"><span>Tanggal</span><b>${escapeHtml(row.DATE)} · ${escapeHtml(row.START_TIME)}–${escapeHtml(row.END_TIME)}</b></div>
+    <div class="kv"><span>Keperluan</span><b>${escapeHtml(row.PURPOSE||'-')}</b></div>
+    ${row.FACILITY_LIST?`<div class="kv"><span>Fasilitas tambahan</span><b>${escapeHtml(row.FACILITY_LIST)}</b></div>`:''}
+    <div class="kv"><span>Total biaya</span><b>${escapeHtml(formatCurrency(row.TOTAL_FEE))}</b></div>
+    <div style="margin-top:12px"><label>Daftar Barang</label>
+      <div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th>Sudah Diambil</th><th>Sudah Dikembalikan</th></tr></thead>
+      <tbody>${rowsHtml||'<tr><td colspan="4">Tidak ada item.</td></tr>'}</tbody></table></div>
+    </div>
+  `, [`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);
 }
 async function setBookingStatus(id,status){
   try{
@@ -1603,6 +1715,95 @@ async function setBookingStatus(id,status){
     showToast('Status booking diperbarui.','success');
     renderBookingTable();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+
+/* =========================================================
+   CHECKOUT / PENGEMBALIAN BARANG — SCAN BARCODE
+========================================================= */
+function renderCheckout(){
+  const content = document.getElementById('content');
+  content.innerHTML = `
+    <div class="page-title">🔦 Checkout Barang (Scan Barcode)</div>
+    <div class="page-subtitle">Scan / masukkan nomor inventaris (barcode) untuk mengeluarkan atau mengembalikan barang. Kompatibel dengan scanner barcode USB/Bluetooth (mode keyboard).</div>
+    <div class="card">
+      <div class="form-group">
+        <label>Nomor Inventaris / Barcode</label>
+        <input id="co_BARCODE" placeholder="Scan atau ketik nomor inventaris, lalu tekan Enter" autocomplete="off">
+        <div class="hint">Barang tersedia → scan untuk <b>mengeluarkan</b> (perlu booking disetujui). Barang sedang dipinjam → scan lagi untuk <b>mengembalikan</b>.</div>
+      </div>
+      <div id="co_result"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Riwayat Scan Terbaru</div>
+      <div id="co_history"></div>
+    </div>
+  `;
+  const input = document.getElementById('co_BARCODE');
+  input.addEventListener('keydown', function(e){
+    if(e.key==='Enter'){ e.preventDefault(); processCheckoutScan(input.value.trim()); input.value=''; }
+  });
+  input.focus();
+  renderCheckoutHistory();
+}
+function renderCheckoutHistory(){
+  const el = document.getElementById('co_history');
+  if(!el) return;
+  const rows = DB.AUDIT_LOG.filter(l=>l.MODULE==='CHECKOUT').slice(0,15);
+  el.innerHTML = renderTableHtml(rows,[['CREATED_AT','Waktu'],['USER_NAME','Petugas'],['DESCRIPTION','Keterangan']],function(){ return ''; });
+}
+async function processCheckoutScan(barcode){
+  try{
+    requirePerm('booking.checkout');
+    const resultEl = document.getElementById('co_result');
+    if(!barcode){ return; }
+    const unit = DB.ASSET_UNITS.find(u=>u.INVENTORY_NUMBER===barcode || u.ID===barcode);
+    if(!unit){
+      resultEl.innerHTML = `<div class="error">Barcode "${escapeHtml(barcode)}" tidak ditemukan.</div>`;
+      showToast('Barcode tidak ditemukan.','error');
+      return;
+    }
+    const assetName = nameOf('ASSETS',unit.ASSET_ID);
+
+    if(String(unit.STATUS).toUpperCase()==='DIPINJAM'){
+      // RETURN flow
+      const booking = DB.BOOKINGS.find(b=>b.TYPE==='ASSET' && ['DISETUJUI','DIAMBIL'].includes(b.STATUS) &&
+        (b.ITEMS||[]).some(i=>i.ASSET_ID===unit.ASSET_ID && (i.ISSUED_UNIT_IDS||[]).includes(unit.ID) && !(i.RETURNED_UNIT_IDS||[]).includes(unit.ID)));
+      if(!booking){
+        resultEl.innerHTML = `<div class="error">Unit ini berstatus dipinjam tetapi tidak ditemukan booking aktif yang cocok. Silakan periksa manual di Unit Inventaris.</div>`;
+        return;
+      }
+      const item = booking.ITEMS.find(i=>i.ASSET_ID===unit.ASSET_ID);
+      item.RETURNED_UNIT_IDS.push(unit.ID);
+      unit.STATUS = 'TERSEDIA';
+      const allReturned = booking.ITEMS.every(i=>(i.RETURNED_UNIT_IDS||[]).length>=i.QTY);
+      if(allReturned) booking.STATUS = 'SELESAI';
+      await audit('RETURN','CHECKOUT',unit.ID,'Pengembalian '+assetName+' ('+unit.INVENTORY_NUMBER+') oleh '+booking.USER_NAME);
+      await saveDB();
+      resultEl.innerHTML = `<div class="toast success" style="position:static">✅ Barang "${escapeHtml(assetName)}" (${escapeHtml(unit.INVENTORY_NUMBER)}) berhasil dikembalikan. Peminjam: ${escapeHtml(booking.USER_NAME)}.</div>`;
+      showToast('Barang dikembalikan.','success');
+    }else{
+      // ISSUE / CHECKOUT flow
+      const booking = DB.BOOKINGS.find(b=>b.TYPE==='ASSET' && b.STATUS==='DISETUJUI' &&
+        (b.ITEMS||[]).some(i=>i.ASSET_ID===unit.ASSET_ID && (i.ISSUED_UNIT_IDS||[]).length < i.QTY));
+      if(!booking){
+        resultEl.innerHTML = `<div class="error">Tidak ada booking yang disetujui (DISETUJUI) untuk barang "${escapeHtml(assetName)}".</div>`;
+        showToast('Tidak ada booking disetujui untuk barang ini.','warning');
+        return;
+      }
+      const item = booking.ITEMS.find(i=>i.ASSET_ID===unit.ASSET_ID && (i.ISSUED_UNIT_IDS||[]).length < i.QTY);
+      item.ISSUED_UNIT_IDS.push(unit.ID);
+      unit.STATUS = 'DIPINJAM';
+      const allIssued = booking.ITEMS.every(i=>(i.ISSUED_UNIT_IDS||[]).length>=i.QTY);
+      if(allIssued) booking.STATUS = 'DIAMBIL';
+      await audit('ISSUE','CHECKOUT',unit.ID,'Barang keluar '+assetName+' ('+unit.INVENTORY_NUMBER+') untuk '+booking.USER_NAME);
+      await saveDB();
+      resultEl.innerHTML = `<div class="toast success" style="position:static">📤 Barang "${escapeHtml(assetName)}" (${escapeHtml(unit.INVENTORY_NUMBER)}) berhasil dikeluarkan untuk ${escapeHtml(booking.USER_NAME)}.</div>`;
+      showToast('Barang dikeluarkan.','success');
+    }
+    renderCheckoutHistory();
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 
 /* =========================================================
@@ -2064,13 +2265,17 @@ function renderApplicationSettings(){
       </div>
       <div class="card">
         <div class="card-title">Modul & Biaya</div>
-        <div class="card-sub">Aktifkan / nonaktifkan modul dan default biaya.</div>
+        <div class="card-sub">Aktifkan / nonaktifkan modul dan atur harga dasar sewa/pinjam.</div>
         <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_BOOKING" ${settingBool('ENABLE_BOOKING')?'checked':''}> Modul Booking (Ruangan & Barang)</label><br>
         <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_REPORT" ${settingBool('ENABLE_REPORT')?'checked':''}> Modul Laporan Kerusakan</label><br>
         <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_MAINTENANCE" ${settingBool('ENABLE_MAINTENANCE')?'checked':''}> Modul Maintenance</label>
-        <div style="margin-top:12px"><label>Default Harga Sewa Dasar (Rp)</label><input id="s_DEFAULT_BASE_FEE" type="number" value="${escapeHtml(s.DEFAULT_BASE_FEE||0)}"></div>
-        <div style="margin-top:8px"><label>Default Harga Fasilitas Tambahan (Rp)</label><input id="s_DEFAULT_FACILITY_FEE" type="number" value="${escapeHtml(s.DEFAULT_FACILITY_FEE||0)}"></div>
-        <button class="btn btn-primary btn-block" style="margin-top:8px" onclick="saveModuleSettings()">💾 Simpan Modul & Biaya</button>
+        <div style="margin-top:12px"><label>Default Harga Sewa Dasar Ruangan (Rp)</label><input id="s_DEFAULT_BASE_FEE" type="number" value="${escapeHtml(s.DEFAULT_BASE_FEE||0)}"></div>
+        <div class="hint" style="margin-top:-8px;margin-bottom:8px">Dipakai jika suatu ruangan belum mempunyai tarif sewa sendiri.</div>
+        <div><label>Default Harga Sewa Dasar Barang (Rp)</label><input id="s_DEFAULT_ASSET_BASE_FEE" type="number" value="${escapeHtml(s.DEFAULT_ASSET_BASE_FEE||0)}"></div>
+        <div class="hint" style="margin-top:-8px;margin-bottom:8px">Dipakai sebagai referensi jika suatu barang belum mempunyai harga sewa/pinjam sendiri (atur di menu Semua Aset).</div>
+        <div><label>Default Biaya Tambahan Fasilitas (Rp)</label><input id="s_DEFAULT_FACILITY_FEE" type="number" value="${escapeHtml(s.DEFAULT_FACILITY_FEE||0)}"></div>
+        <div class="hint" style="margin-top:-8px">Fasilitas tambahan (AC, Sound System, dll) diatur per-aset di menu Semua Aset dengan menandai "Fasilitas Tambahan".</div>
+        <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="saveModuleSettings()">💾 Simpan Modul & Biaya</button>
       </div>
     </div>
     <div class="card">
@@ -2098,6 +2303,7 @@ async function saveModuleSettings(){
     DB.APP_SETTINGS.ENABLE_REPORT = document.getElementById('s_ENABLE_REPORT').checked ? 'TRUE':'FALSE';
     DB.APP_SETTINGS.ENABLE_MAINTENANCE = document.getElementById('s_ENABLE_MAINTENANCE').checked ? 'TRUE':'FALSE';
     DB.APP_SETTINGS.DEFAULT_BASE_FEE = Number(getValue('s_DEFAULT_BASE_FEE'))||0;
+    DB.APP_SETTINGS.DEFAULT_ASSET_BASE_FEE = Number(getValue('s_DEFAULT_ASSET_BASE_FEE'))||0;
     DB.APP_SETTINGS.DEFAULT_FACILITY_FEE = Number(getValue('s_DEFAULT_FACILITY_FEE'))||0;
     await audit('UPDATE','APP_SETTINGS','','Update modul aplikasi & biaya');
     await saveDB();
@@ -2186,7 +2392,7 @@ function showToast(message,type){
   },3500);
 }
 
-/* ========================================================
+/* =========================================================
    HELPERS
 ========================================================= */
 function getValue(id){ const el = document.getElementById(id); return el ? el.value : ''; }
