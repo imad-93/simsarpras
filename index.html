@@ -612,7 +612,8 @@ async function buildDefaultDB(){
   ];
   assetsSeed.forEach(x=>{
     db.SEQ.ASSETS++;
-    db.ASSETS.push({ID:uid('AST'),CODE:x[0],NAME:x[1],CATEGORY_ID:x[2],BRAND:x[3],MODEL:x[4],
+    const category = db.ASSET_CATEGORIES.find(c=>c.ID===x[2]);
+    db.ASSETS.push({ID:uid('AST'),CODE:x[0],NAME:x[1],CATEGORY_ID:x[2],TYPE:category?category.TYPE:'ASET_TETAP',BRAND:x[3],MODEL:x[4],
       SERIAL_NUMBER:'',ACQUISITION_YEAR:x[5],UNIT_PRICE:x[6],DESCRIPTION:'',ACTIVE:'TRUE',CREATED_AT:nowStr()});
   });
 
@@ -997,6 +998,10 @@ function formatCell(row,key){
   }
   if(key==='ASSET_ID') return escapeHtml(nameOf('ASSETS',value) || '-');
   if(key==='COLOR') return '<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:4px;background:'+escapeHtml(value||'#ccc')+';display:inline-block;border:1px solid #0002"></span>'+escapeHtml(value||'')+'</span>';
+  if(key==='TYPE'){
+    const map = {ASET_TETAP:'Aset Tetap',HABIS_PAKAI:'Habis Pakai'};
+    return escapeHtml(map[String(value)] || String(value || '-'));
+  }
   return escapeHtml(value===undefined||value===null?'':String(value));
 }
 
@@ -1171,7 +1176,7 @@ function filterAssets(){
 }
 function renderAssetTable(rows,canManage){
   document.getElementById('assetsTable').innerHTML = renderTableHtml(rows,
-    [['CODE','Kode'],['NAME','Nama'],['CATEGORY_ID','Kategori'],['BRAND','Merk'],['UNIT_PRICE','Harga'],['ACTIVE','Status']],
+    [['CODE','Kode'],['NAME','Nama'],['CATEGORY_ID','Kategori'],['TYPE','Tipe'],['BRAND','Merk'],['UNIT_PRICE','Harga'],['ACTIVE','Status']],
     function(row){
       const unitCount = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===row.ID).length;
       let html = `<span class="badge badge-gray" style="margin-right:5px">${unitCount} unit</span>`;
@@ -1186,9 +1191,10 @@ function assetForm(row){
   row = row || {};
   openModal(row.ID?'Edit Aset':'Tambah Aset', `
     <div class="form-grid">
-      <div><label>Kode *</label><input id="f_CODE" value="${escapeHtml(row.CODE||'')}"></div>
+      <div><label>Kode</label><input id="f_CODE" value="${escapeHtml(row.CODE||'')}" placeholder="Biarkan kosong untuk auto-generate"></div>
       <div><label>Nama Aset *</label><input id="f_NAME" value="${escapeHtml(row.NAME||'')}"></div>
-      <div><label>Kategori</label><select id="f_CATEGORY_ID">${selectOptions(DB.ASSET_CATEGORIES,'ID','NAME',row.CATEGORY_ID,true)}</select></div>
+      <div><label>Kategori</label><select id="f_CATEGORY_ID" onchange="onAssetCategoryChange()">${selectOptions(DB.ASSET_CATEGORIES,'ID','NAME',row.CATEGORY_ID,true)}</select></div>
+      <div><label>Tipe</label><input id="f_TYPE" value="${escapeHtml(row.TYPE||'')}" disabled></div>
       <div><label>Merk</label><input id="f_BRAND" value="${escapeHtml(row.BRAND||'')}"></div>
       <div><label>Model</label><input id="f_MODEL" value="${escapeHtml(row.MODEL||'')}"></div>
       <div><label>Nomor Seri</label><input id="f_SERIAL_NUMBER" value="${escapeHtml(row.SERIAL_NUMBER||'')}"></div>
@@ -1200,6 +1206,13 @@ function assetForm(row){
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveAssetForm('${row.ID||''}')">💾 Simpan</button>`
   ]);
+  // set type field initially
+  setTimeout(onAssetCategoryChange,50);
+}
+function onAssetCategoryChange(){
+  const cid = getValue('f_CATEGORY_ID');
+  const cat = DB.ASSET_CATEGORIES.find(c=>c.ID===cid);
+  document.getElementById('f_TYPE').value = cat ? cat.TYPE : '';
 }
 async function saveAssetForm(id){
   try{
@@ -1210,7 +1223,18 @@ async function saveAssetForm(id){
       ACQUISITION_YEAR:getValue('f_ACQUISITION_YEAR'), UNIT_PRICE:getValue('f_UNIT_PRICE'),
       DESCRIPTION:getValue('f_DESCRIPTION'), ACTIVE:'TRUE'
     };
-    if(!data.CODE || !data.NAME){ showToast('Kode dan nama aset wajib diisi.','warning'); return; }
+    // assign TYPE from category
+    const cat = DB.ASSET_CATEGORIES.find(c=>c.ID===data.CATEGORY_ID);
+    data.TYPE = cat ? cat.TYPE : (data.TYPE||'ASET_TETAP');
+
+    if(!data.NAME){ showToast('Nama aset wajib diisi.','warning'); return; }
+
+    if(!data.CODE){
+      // auto-generate code if empty
+      DB.SEQ.ASSETS++;
+      data.CODE = 'AST-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSETS).padStart(5,'0');
+    }
+
     if(id){
       const idx = DB.ASSETS.findIndex(x=>x.ID===id);
       DB.ASSETS[idx] = Object.assign({},DB.ASSETS[idx],data);
@@ -1285,7 +1309,7 @@ function assetUnitForm(row){
   openModal(row.ID?'Edit Unit Inventaris':'Tambah Unit Inventaris', `
     <div class="form-grid">
       <div class="form-full"><label>Aset *</label><select id="u_ASSET_ID">${selectOptions(DB.ASSETS,'ID','NAME',row.ASSET_ID,true)}</select></div>
-      <div><label>No. Inventaris *</label><input id="u_INVENTORY_NUMBER" value="${escapeHtml(row.INVENTORY_NUMBER||'')}"></div>
+      <div><label>No. Inventaris</label><input id="u_INVENTORY_NUMBER" value="${escapeHtml(row.INVENTORY_NUMBER||'')}" placeholder="Biarkan kosong untuk auto-generate"></div>
       <div><label>Kondisi</label><select id="u_CONDITION_ID">${selectOptions(DB.ASSET_CONDITIONS,'ID','NAME',row.CONDITION_ID,true)}</select></div>
       <div><label>Gedung</label><select id="u_BUILDING_ID" onchange="onUnitBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',row.BUILDING_ID,true)}</select></div>
       <div><label>Ruangan</label><select id="u_ROOM_ID">${roomOptionsForBuilding(row.BUILDING_ID,row.ROOM_ID)}</select></div>
@@ -1318,7 +1342,11 @@ async function saveAssetUnitForm(id){
       CONDITION_ID:getValue('u_CONDITION_ID'), BUILDING_ID:getValue('u_BUILDING_ID'),
       ROOM_ID:getValue('u_ROOM_ID'), STATUS:getValue('u_STATUS'), NOTE:getValue('u_NOTE')
     };
-    if(!data.ASSET_ID || !data.INVENTORY_NUMBER){ showToast('Aset dan nomor inventaris wajib diisi.','warning'); return; }
+    if(!data.ASSET_ID){ showToast('Aset wajib diisi.','warning'); return; }
+    if(!data.INVENTORY_NUMBER){
+      DB.SEQ.ASSET_UNITS++;
+      data.INVENTORY_NUMBER = 'INV-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSET_UNITS).padStart(5,'0');
+    }
     if(id){
       const idx = DB.ASSET_UNITS.findIndex(x=>x.ID===id);
       DB.ASSET_UNITS[idx] = Object.assign({},DB.ASSET_UNITS[idx],data);
@@ -1407,23 +1435,53 @@ function renderBookingTable(){
 function bookingForm(type){
   openModal(type==='ROOM'?'Booking Ruangan':'Peminjaman Barang', `
     <div class="form-grid">
-      ${type==='ROOM' ? `<div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>`
-        : `<div class="form-full"><label>Unit Barang *</label><select id="b_ITEM_ID">${selectOptions(DB.ASSET_UNITS.filter(u=>u.STATUS==='TERSEDIA'),'ID','INVENTORY_NUMBER',null,true)}</select></div>`}
+      ${type==='ROOM' ? `<div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID" onchange="onBookingItemChange('ROOM')">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>`
+        : `<div class="form-full"><label>Unit Barang *</label><select id="b_ITEM_ID" onchange="onBookingItemChange('ASSET')">${selectOptions(DB.ASSET_UNITS.filter(u=>u.STATUS==='TERSEDIA'),'ID','INVENTORY_NUMBER',null,true)}</select></div>`}
       <div><label>Tanggal *</label><input id="b_DATE" type="date" min="${todayStr()}"></div>
       <div></div>
       <div><label>Jam Mulai *</label><input id="b_START_TIME" type="time"></div>
       <div><label>Jam Selesai *</label><input id="b_END_TIME" type="time"></div>
+      <div><label>Harga Sewa Dasar (Rp)</label><input id="b_BASE_FEE" type="number" value="0"></div>
+      <div><label>Harga Fasilitas Tambahan (Rp)</label><input id="b_FACILITY_FEE" type="number" value="0"></div>
       <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="b_PURPOSE" placeholder="Contoh: Rapat koordinasi prodi"></textarea></div>
     </div>
+    <div style="margin-top:8px;font-size:13px;color:#4B5468">Total estimasi: <span id="b_total_preview">-</span></div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveBooking('${type}')">📤 Ajukan</button>`
   ]);
+  setTimeout(function(){
+    onBookingItemChange(type);
+    const baseEl = document.getElementById('b_BASE_FEE');
+    const facEl = document.getElementById('b_FACILITY_FEE');
+    function updatePreview(){ 
+      const base = Number(baseEl.value)||0; const fac = Number(facEl.value)||0;
+      document.getElementById('b_total_preview').textContent = formatCurrency(base+fac);
+    }
+    if(baseEl) baseEl.addEventListener('input', updatePreview);
+    if(facEl) facEl.addEventListener('input', updatePreview);
+    updatePreview();
+  },50);
+}
+function onBookingItemChange(type){
+  const itemId = getValue('b_ITEM_ID');
+  if(type==='ROOM'){
+    const room = DB.ROOMS.find(r=>r.ID===itemId);
+    document.getElementById('b_BASE_FEE').value = room ? (room.RENTAL_FEE || 0) : 0;
+  }else{
+    // for asset unit booking, base fee is 0 by default
+    document.getElementById('b_BASE_FEE').value = 0;
+  }
+  const base = Number(document.getElementById('b_BASE_FEE').value)||0;
+  const fac = Number(document.getElementById('b_FACILITY_FEE').value)||0;
+  document.getElementById('b_total_preview').textContent = formatCurrency(base+fac);
 }
 async function saveBooking(type){
   try{
     requirePerm('booking.create');
     const itemId = getValue('b_ITEM_ID'), date = getValue('b_DATE'), start = getValue('b_START_TIME'), end = getValue('b_END_TIME'), purpose = getValue('b_PURPOSE');
+    const baseFee = Number(getValue('b_BASE_FEE'))||0;
+    const facilityFee = Number(getValue('b_FACILITY_FEE'))||0;
     if(!itemId || !date || !start || !end || !purpose){ showToast('Semua kolom wajib diisi.','warning'); return; }
     if(start>=end){ showToast('Jam selesai harus lebih besar dari jam mulai.','warning'); return; }
 
@@ -1434,10 +1492,10 @@ async function saveBooking(type){
     });
     if(conflict){ showToast('Jadwal bentrok dengan booking lain pada waktu tersebut.','warning'); return; }
 
-    let itemName = '', baseFee = 0;
+    let itemName = '', base = baseFee;
     if(type==='ROOM'){
       const room = DB.ROOMS.find(r=>r.ID===itemId);
-      itemName = room ? room.NAME : ''; baseFee = room ? Number(room.RENTAL_FEE)||0 : 0;
+      itemName = room ? room.NAME : ''; base = baseFee || Number(room.RENTAL_FEE)||0;
     }else{
       const unit = DB.ASSET_UNITS.find(u=>u.ID===itemId);
       itemName = unit ? (nameOf('ASSETS',unit.ASSET_ID)+' ('+unit.INVENTORY_NUMBER+')') : '';
@@ -1447,7 +1505,7 @@ async function saveBooking(type){
       ID:uid('BKG'), TYPE:type, ITEM_ID:itemId, ITEM_NAME:itemName,
       USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME,
       DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-      BASE_FEE:baseFee, FACILITY_FEE:0, TOTAL_FEE:baseFee,
+      BASE_FEE:base, FACILITY_FEE:facilityFee, TOTAL_FEE:(Number(base)||0)+(Number(facilityFee)||0),
       STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
     };
     DB.BOOKINGS.push(data);
@@ -2073,5 +2131,4 @@ document.addEventListener('keydown',function(event){
 init();
 </script>
 </body>
-<script src="simsarpras-gen.js"></script>
 </html>
