@@ -287,6 +287,22 @@ tbody tr:hover{background:#FAFBFE}
 
 <div id="toastContainer" class="toast-container"></div>
 
+<div id="qrScannerBackdrop" class="modal-backdrop hidden" onclick="qrScannerBackdropClick(event)">
+  <div class="modal" style="max-width:420px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div class="modal-title">📷 Scan QR Code</div>
+      <button class="btn btn-light btn-sm" onclick="closeQrScanner()">✕</button>
+    </div>
+    <div id="qrReaderRegion" style="width:100%;border-radius:11px;overflow:hidden;background:#000;min-height:250px"></div>
+    <div id="qrScannerHint" class="hint" style="margin-top:10px;text-align:center">Arahkan kamera ke QR code aset...</div>
+  </div>
+</div>
+
+<!-- Library untuk membaca QR code dari kamera (HP & webcam laptop) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<!-- Library untuk membuat / generate gambar QR code -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
 <script>
 'use strict';
 
@@ -1324,7 +1340,7 @@ function renderAssetUnits(){
   const canManage = hasPermission(STATE.currentUser,'asset_unit.manage');
   content.innerHTML = `
     <div class="page-title">🏷️ Unit Inventaris</div>
-    <div class="page-subtitle">Setiap barang fisik mempunyai identitas inventaris sendiri. Nomor inventaris juga berfungsi sebagai kode barcode.</div>
+    <div class="page-subtitle">Setiap barang fisik mempunyai identitas inventaris sendiri. Nomor inventaris juga berfungsi sebagai kode barcode/QR — klik tombol 🔳 QR untuk melihat, mengunduh, atau mencetak stikernya.</div>
     <div class="card">
       <div class="toolbar">
         <div class="toolbar-left"><input id="unitSearch" class="search-box" placeholder="🔎 Cari inventaris..." oninput="filterAssetUnits()"></div>
@@ -1347,8 +1363,10 @@ function renderAssetUnitTable(rows,canManage){
   document.getElementById('unitsTable').innerHTML = renderTableHtml(rows,
     [['INVENTORY_NUMBER','No. Inventaris / Barcode'],['ASSET_ID','Aset'],['CONDITION_ID','Kondisi'],['BUILDING_ID','Gedung'],['ROOM_ID','Ruangan'],['STATUS','Status']],
     function(row){
-      if(!canManage) return '<span style="color:#9AA3B5;font-size:11px">Lihat saja</span>';
-      return `<button class="btn btn-light btn-sm" onclick='assetUnitForm(${safeJson(row)})'>✏️</button>
+      const qrBtn = `<button class="btn btn-light btn-sm" onclick="showUnitQr('${row.ID}')" title="Lihat / cetak QR">🔳 QR</button>`;
+      if(!canManage) return qrBtn;
+      return `${qrBtn}
+        <button class="btn btn-light btn-sm" onclick='assetUnitForm(${safeJson(row)})'>✏️</button>
         <button class="btn btn-danger btn-sm" onclick="assetUnitDelete('${row.ID}')">🗑️</button>`;
     });
 }
@@ -1723,12 +1741,15 @@ async function setBookingStatus(id,status){
 function renderCheckout(){
   const content = document.getElementById('content');
   content.innerHTML = `
-    <div class="page-title">🔦 Checkout Barang (Scan Barcode)</div>
-    <div class="page-subtitle">Scan / masukkan nomor inventaris (barcode) untuk mengeluarkan atau mengembalikan barang. Kompatibel dengan scanner barcode USB/Bluetooth (mode keyboard).</div>
+    <div class="page-title">🔦 Checkout Barang (Scan Barcode / QR)</div>
+    <div class="page-subtitle">Scan / masukkan nomor inventaris untuk mengeluarkan atau mengembalikan barang. Kompatibel dengan scanner barcode USB/Bluetooth (mode keyboard), atau gunakan kamera HP/laptop untuk scan QR code aset.</div>
     <div class="card">
       <div class="form-group">
-        <label>Nomor Inventaris / Barcode</label>
-        <input id="co_BARCODE" placeholder="Scan atau ketik nomor inventaris, lalu tekan Enter" autocomplete="off">
+        <label>Nomor Inventaris / Barcode / QR</label>
+        <div style="display:flex;gap:8px">
+          <input id="co_BARCODE" style="flex:1" placeholder="Scan atau ketik nomor inventaris, lalu tekan Enter" autocomplete="off">
+          <button type="button" class="btn btn-primary" onclick="openQrScanner(function(text){ processCheckoutScan(text); document.getElementById('co_BARCODE').value=''; document.getElementById('co_BARCODE').focus(); })">📷 Scan Kamera</button>
+        </div>
         <div class="hint">Barang tersedia → scan untuk <b>mengeluarkan</b> (perlu booking disetujui). Barang sedang dipinjam → scan lagi untuk <b>mengembalikan</b>.</div>
       </div>
       <div id="co_result"></div>
@@ -2363,6 +2384,116 @@ function openModal(title,body,footer){
 function closeModal(){ document.getElementById('modalBackdrop').classList.add('hidden'); }
 function modalBackdropClick(event){ if(event.target.id==='modalBackdrop') closeModal(); }
 
+/* =========================================================
+   QR SCANNER (kamera HP / webcam laptop)
+========================================================= */
+let qrScannerInstance = null;
+let qrScannerCallback = null;
+function openQrScanner(onSuccess){
+  qrScannerCallback = onSuccess;
+  document.getElementById('qrScannerBackdrop').classList.remove('hidden');
+  const hint = document.getElementById('qrScannerHint');
+  hint.style.color = '';
+  hint.textContent = 'Meminta izin kamera...';
+  if(typeof Html5Qrcode === 'undefined'){
+    hint.style.color = 'var(--danger)';
+    hint.textContent = 'Pustaka kamera gagal dimuat. Periksa koneksi internet lalu coba lagi.';
+    return;
+  }
+  if(!(location.protocol==='https:' || location.hostname==='localhost')){
+    hint.style.color = 'var(--danger)';
+    hint.textContent = 'Akses kamera memerlukan koneksi HTTPS.';
+    return;
+  }
+  qrScannerInstance = new Html5Qrcode('qrReaderRegion');
+  const config = { fps:10, qrbox:{width:230,height:230} };
+  qrScannerInstance.start(
+    { facingMode:'environment' }, // kamera belakang di HP, webcam default di laptop
+    config,
+    function(decodedText){
+      const cb = qrScannerCallback;
+      closeQrScanner();
+      if(cb) cb(decodedText);
+    },
+    function(){ /* frame tanpa QR terdeteksi, abaikan */ }
+  ).then(function(){
+    hint.textContent = 'Arahkan kamera ke QR code aset...';
+  }).catch(function(err){
+    hint.style.color = 'var(--danger)';
+    hint.textContent = 'Tidak bisa mengakses kamera: '+getErrorMessage(err)+'. Pastikan izin kamera diberikan.';
+  });
+}
+function closeQrScanner(){
+  document.getElementById('qrScannerBackdrop').classList.add('hidden');
+  if(qrScannerInstance){
+    const inst = qrScannerInstance;
+    qrScannerInstance = null;
+    inst.stop().then(function(){ inst.clear(); }).catch(function(){});
+  }
+  qrScannerCallback = null;
+}
+function qrScannerBackdropClick(event){ if(event.target.id==='qrScannerBackdrop') closeQrScanner(); }
+
+/* =========================================================
+   QR GENERATOR (lihat / download / cetak label per unit)
+========================================================= */
+function showUnitQr(unitId){
+  const row = DB.ASSET_UNITS.find(u=>u.ID===unitId);
+  if(!row){ showToast('Unit tidak ditemukan.','error'); return; }
+  const assetName = nameOf('ASSETS',row.ASSET_ID);
+  openModal('🔳 QR Code Unit Inventaris', `
+    <div style="text-align:center">
+      <div id="qrGenTarget" style="display:inline-block;padding:16px;background:#fff;border:1px solid var(--border);border-radius:12px"></div>
+      <div style="margin-top:14px;font-weight:800;font-size:14px">${escapeHtml(assetName)}</div>
+      <div style="color:var(--muted);font-size:12px;margin-top:2px;letter-spacing:.4px">${escapeHtml(row.INVENTORY_NUMBER||'')}</div>
+    </div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Tutup</button>`,
+    `<button class="btn btn-light" onclick="downloadUnitQr('${row.ID}')">⬇️ Download PNG</button>`,
+    `<button class="btn btn-primary" onclick="printUnitQr('${row.ID}')">🖨️ Cetak Label</button>`
+  ]);
+  setTimeout(function(){
+    const target = document.getElementById('qrGenTarget');
+    if(!target) return;
+    target.innerHTML = '';
+    if(typeof QRCode === 'undefined'){
+      target.innerHTML = '<div style="color:var(--danger);font-size:12px">Pustaka QR gagal dimuat. Periksa koneksi internet.</div>';
+      return;
+    }
+    new QRCode(target, { text: row.INVENTORY_NUMBER || row.ID, width:200, height:200, correctLevel: QRCode.CorrectLevel.M });
+  },50);
+}
+function downloadUnitQr(unitId){
+  const canvas = document.querySelector('#qrGenTarget canvas');
+  if(!canvas){ showToast('QR belum siap, coba lagi sebentar.','warning'); return; }
+  const row = DB.ASSET_UNITS.find(u=>u.ID===unitId);
+  const link = document.createElement('a');
+  link.download = 'QR-'+(row?row.INVENTORY_NUMBER:unitId)+'.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+function printUnitQr(unitId){
+  const canvas = document.querySelector('#qrGenTarget canvas');
+  if(!canvas){ showToast('QR belum siap, coba lagi sebentar.','warning'); return; }
+  const row = DB.ASSET_UNITS.find(u=>u.ID===unitId);
+  const assetName = row ? nameOf('ASSETS',row.ASSET_ID) : '';
+  const dataUrl = canvas.toDataURL('image/png');
+  const w = window.open('', '_blank', 'width=420,height=520');
+  if(!w){ showToast('Popup diblokir browser. Izinkan popup untuk mencetak label.','warning'); return; }
+  w.document.write(
+    '<html><head><title>Cetak QR - '+escapeHtml(row?row.INVENTORY_NUMBER:'')+'</title>'+
+    '<style>body{font-family:Arial,sans-serif;text-align:center;padding:24px}img{width:220px;height:220px}'+
+    '.name{font-weight:800;font-size:15px;margin-top:12px}.code{color:#555;font-size:12px;margin-top:2px;letter-spacing:.5px}</style>'+
+    '</head><body>'+
+    '<img src="'+dataUrl+'">'+
+    '<div class="name">'+escapeHtml(assetName)+'</div>'+
+    '<div class="code">'+escapeHtml(row?row.INVENTORY_NUMBER:'')+'</div>'+
+    '<script>window.onload=function(){window.print();};<\/script>'+
+    '</body></html>'
+  );
+  w.document.close();
+}
+
 function toggleSidebar(){
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('sidebarOverlay').classList.toggle('active');
@@ -2406,7 +2537,7 @@ function safeJson(value){
 function getErrorMessage(error){ return (error && error.message) ? error.message : String(error||'Terjadi kesalahan.'); }
 
 document.addEventListener('keydown',function(event){
-  if(event.key==='Escape'){ closeModal(); closeSidebar(); }
+  if(event.key==='Escape'){ closeModal(); closeSidebar(); closeQrScanner(); }
 });
 
 init();
