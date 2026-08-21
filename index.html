@@ -302,6 +302,8 @@ tbody tr:hover{background:#FAFBFE}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <!-- Library untuk membuat / generate gambar QR code -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!-- Library untuk baca/tulis file Excel (.xlsx) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <script>
 'use strict';
@@ -1331,6 +1333,102 @@ async function assetDelete(id){
 }
 
 /* =========================================================
+   IMPORT / EXPORT EXCEL (helper umum)
+========================================================= */
+function downloadExcelWorkbook(mainRows,mainSheetName,filename,extraSheets){
+  if(typeof XLSX === 'undefined'){ showToast('Pustaka Excel gagal dimuat. Periksa koneksi internet.','error'); return; }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mainRows), mainSheetName);
+  (extraSheets||[]).forEach(function(s){
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(s.rows), s.name);
+  });
+  XLSX.writeFile(wb, filename);
+}
+async function readExcelFile(fileInputEl){
+  if(!fileInputEl.files || !fileInputEl.files[0]) throw new Error('Pilih file Excel terlebih dahulu.');
+  if(typeof XLSX === 'undefined') throw new Error('Pustaka Excel gagal dimuat. Periksa koneksi internet.');
+  const buf = await fileInputEl.files[0].arrayBuffer();
+  const wb = XLSX.read(buf,{type:'array'});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws,{defval:''});
+  if(!rows.length) throw new Error('File kosong atau format tidak sesuai template.');
+  return rows;
+}
+
+/* =========================================================
+   ASSET IMPORT (Excel)
+========================================================= */
+function downloadAssetTemplate(){
+  const contoh = [{
+    'Nama Aset':'Kursi Kuliah Chitose',
+    'Kategori':(DB.ASSET_CATEGORIES[0]?DB.ASSET_CATEGORIES[0].NAME:'Furniture'),
+    'Merk':'Chitose','Model':'CT-01','Nomor Seri':'','Tahun Perolehan':2023,'Harga Satuan':350000,
+    'Bisa Dipinjamkan (YA/TIDAK)':'TIDAK','Harga Sewa per Unit':0,
+    'Fasilitas Tambahan (YA/TIDAK)':'TIDAK','Biaya Tambahan Fasilitas':0,'Keterangan':''
+  }];
+  const kategoriRef = DB.ASSET_CATEGORIES.map(c=>({'Nama Kategori':c.NAME,'Tipe':c.TYPE}));
+  downloadExcelWorkbook(contoh,'Import Aset','Template_Import_Aset.xlsx',[
+    {name:'Daftar Kategori (referensi)',rows:kategoriRef.length?kategoriRef:[{'Nama Kategori':'(belum ada kategori)','Tipe':''}]}
+  ]);
+}
+function assetImportForm(){
+  openModal('📥 Import Data Aset (Excel)', `
+    <div class="hint" style="margin-bottom:12px">
+      1. Download template di bawah, lalu isi datanya. Kolom <b>Nama Aset</b> wajib diisi.<br>
+      2. Kolom <b>Kategori</b> sebaiknya sama persis dengan nama kategori yang sudah ada (lihat sheet "Daftar Kategori" di template). Kalau tidak cocok, aset tetap dibuat tanpa kategori.<br>
+      3. Upload kembali file yang sudah diisi, lalu klik "Proses Import".
+    </div>
+    <button type="button" class="btn btn-light btn-block" onclick="downloadAssetTemplate()" style="margin-bottom:14px">⬇️ Download Template Excel</button>
+    <div class="form-group">
+      <label>Upload File Excel (.xlsx)</label>
+      <input id="assetImportFile" type="file" accept=".xlsx,.xls">
+    </div>
+    <div id="assetImportResult"></div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Tutup</button>`,
+    `<button class="btn btn-primary" onclick="processAssetImport()">📤 Proses Import</button>`
+  ]);
+}
+async function processAssetImport(){
+  const resultEl = document.getElementById('assetImportResult');
+  try{
+    requirePerm('asset.manage');
+    resultEl.innerHTML = '';
+    const rows = await readExcelFile(document.getElementById('assetImportFile'));
+    let success=0, skipped=0; const notes=[];
+    rows.forEach(function(r,idx){
+      const name = String(r['Nama Aset']||'').trim();
+      if(!name){ skipped++; notes.push('Baris '+(idx+2)+': Nama Aset kosong, dilewati.'); return; }
+      const catName = String(r['Kategori']||'').trim();
+      const cat = DB.ASSET_CATEGORIES.find(c=>c.NAME.toLowerCase()===catName.toLowerCase());
+      if(catName && !cat) notes.push('Baris '+(idx+2)+': kategori "'+catName+'" tidak ditemukan, dibuat tanpa kategori.');
+      const canLend = String(r['Bisa Dipinjamkan (YA/TIDAK)']||'').trim().toUpperCase()==='YA';
+      const isFacility = String(r['Fasilitas Tambahan (YA/TIDAK)']||'').trim().toUpperCase()==='YA';
+      DB.SEQ.ASSETS++;
+      DB.ASSETS.push({
+        ID:uid('AST'), CODE:'AST-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSETS).padStart(5,'0'),
+        NAME:name, CATEGORY_ID:cat?cat.ID:'', TYPE:cat?cat.TYPE:'ASET_TETAP',
+        BRAND:String(r['Merk']||''), MODEL:String(r['Model']||''), SERIAL_NUMBER:String(r['Nomor Seri']||''),
+        ACQUISITION_YEAR:r['Tahun Perolehan']||'', UNIT_PRICE:Number(r['Harga Satuan'])||0,
+        CAN_LEND:canLend?'TRUE':'FALSE', RENTAL_FEE:Number(r['Harga Sewa per Unit'])||0,
+        IS_FACILITY:isFacility?'TRUE':'FALSE', FACILITY_FEE:Number(r['Biaya Tambahan Fasilitas'])||0,
+        DESCRIPTION:String(r['Keterangan']||''), ACTIVE:'TRUE', CREATED_AT:nowStr()
+      });
+      success++;
+    });
+    if(success>0){
+      await audit('IMPORT','ASSETS','-','Import '+success+' aset dari Excel');
+      await saveDB();
+    }
+    resultEl.innerHTML = '<div class="'+(success>0?'toast success':'error')+'" style="position:static">'+
+      '✅ Berhasil import '+success+' aset'+(skipped?', '+skipped+' baris dilewati':'')+'.'+
+      (notes.length? '<div style="margin-top:8px;font-size:11.5px;text-align:left">'+notes.map(escapeHtml).join('<br>')+'</div>':'')+
+      '</div>';
+    if(success>0){ showToast(success+' aset berhasil diimpor.','success'); renderAssets(); }
+  }catch(error){ resultEl.innerHTML = '<div class="error">'+escapeHtml(getErrorMessage(error))+'</div>'; }
+}
+
+/* =========================================================
    ASSET UNITS
 ========================================================= */
 function renderAssetUnits(){
@@ -1340,11 +1438,11 @@ function renderAssetUnits(){
   const canManage = hasPermission(STATE.currentUser,'asset_unit.manage');
   content.innerHTML = `
     <div class="page-title">🏷️ Unit Inventaris</div>
-    <div class="page-subtitle">Setiap barang fisik mempunyai identitas inventaris sendiri. Nomor inventaris juga berfungsi sebagai kode barcode/QR — klik tombol 🔳 QR untuk melihat, mengunduh, atau mencetak stikernya.</div>
+    <div class="page-subtitle">Setiap barang fisik mempunyai identitas inventaris sendiri. Untuk barang baru dalam jumlah banyak pakai <b>⚡ Generate</b>, untuk data lama yang sudah punya nomor/lokasi masing-masing pakai <b>📥 Import</b>. Nomor inventaris juga berfungsi sebagai kode barcode/QR — klik 🔳 QR untuk melihat/mencetak stikernya.</div>
     <div class="card">
       <div class="toolbar">
         <div class="toolbar-left"><input id="unitSearch" class="search-box" placeholder="🔎 Cari inventaris..." oninput="filterAssetUnits()"></div>
-        <div class="toolbar-right">${canManage?'<button class="btn btn-primary" onclick="assetUnitForm()">+ Tambah Unit</button>':''}</div>
+        <div class="toolbar-right">${canManage?'<button class="btn btn-primary" onclick="assetUnitForm()">+ Tambah Unit</button><button class="btn btn-light" onclick="generateUnitsForm()">⚡ Generate</button><button class="btn btn-light" onclick="unitImportForm()">📥 Import</button>':''}</div>
       </div>
       <div id="unitsTable"></div>
     </div>
@@ -1438,6 +1536,143 @@ async function assetUnitDelete(id){
     showToast('Unit dihapus.','success');
     renderAssetUnits();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+
+/* =========================================================
+   GENERATE UNIT OTOMATIS (untuk barang identik jumlah banyak)
+========================================================= */
+function generateUnitsForm(){
+  openModal('⚡ Generate Unit Otomatis', `
+    <div class="hint" style="margin-bottom:12px">Cocok untuk barang baru yang identik dalam jumlah banyak (mis. 50 kursi kuliah). Sistem otomatis membuat nomor inventaris berurutan; lokasi/kondisi bisa diedit satu-satu nanti kalau ternyata berbeda.</div>
+    <div class="form-grid">
+      <div class="form-full"><label>Aset *</label><select id="g_ASSET_ID">${selectOptions(DB.ASSETS,'ID','NAME','',true)}</select></div>
+      <div><label>Jumlah Unit *</label><input id="g_QTY" type="number" min="1" max="1000" value="1"></div>
+      <div><label>Kondisi Awal</label><select id="g_CONDITION_ID">${selectOptions(DB.ASSET_CONDITIONS,'ID','NAME','',true)}</select></div>
+      <div><label>Gedung</label><select id="g_BUILDING_ID" onchange="onGenerateBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME','',true)}</select></div>
+      <div><label>Ruangan</label><select id="g_ROOM_ID">${roomOptionsForBuilding('','')}</select></div>
+    </div>
+    <div class="hint" style="margin-top:8px">Nomor inventaris dibuat otomatis berformat <b>INV-${new Date().getFullYear()}-xxxxx</b> berurutan.</div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
+    `<button class="btn btn-primary" onclick="processGenerateUnits()">⚡ Generate</button>`
+  ]);
+}
+function onGenerateBuildingChange(){
+  const b = getValue('g_BUILDING_ID');
+  document.getElementById('g_ROOM_ID').innerHTML = roomOptionsForBuilding(b,'');
+}
+async function processGenerateUnits(){
+  try{
+    requirePerm('asset_unit.manage');
+    const assetId = getValue('g_ASSET_ID');
+    const qty = Number(getValue('g_QTY'))||0;
+    if(!assetId){ showToast('Pilih aset terlebih dahulu.','warning'); return; }
+    if(qty<1 || qty>1000){ showToast('Jumlah unit harus antara 1-1000.','warning'); return; }
+    const conditionId = getValue('g_CONDITION_ID');
+    const buildingId = getValue('g_BUILDING_ID');
+    const roomId = getValue('g_ROOM_ID');
+    const asset = DB.ASSETS.find(a=>a.ID===assetId);
+    for(let i=0;i<qty;i++){
+      DB.SEQ.ASSET_UNITS++;
+      DB.ASSET_UNITS.push({
+        ID:uid('AUN'), ASSET_ID:assetId,
+        INVENTORY_NUMBER:'INV-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSET_UNITS).padStart(5,'0'),
+        CONDITION_ID:conditionId, BUILDING_ID:buildingId, ROOM_ID:roomId, STATUS:'TERSEDIA', NOTE:'',
+        CREATED_AT:nowStr()
+      });
+    }
+    await audit('GENERATE','ASSET_UNITS','-','Generate '+qty+' unit untuk '+(asset?asset.NAME:assetId));
+    await saveDB();
+    closeModal();
+    showToast(qty+' unit inventaris berhasil dibuat.','success');
+    renderAssetUnits();
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+
+/* =========================================================
+   IMPORT UNIT INVENTARIS (Excel)
+========================================================= */
+function downloadUnitTemplate(){
+  const contoh = [{
+    'Nama Aset':(DB.ASSETS[0]?DB.ASSETS[0].NAME:'Kursi Kuliah Chitose'),
+    'No. Inventaris':'',
+    'Kondisi':(DB.ASSET_CONDITIONS[0]?DB.ASSET_CONDITIONS[0].NAME:'Baik'),
+    'Gedung':(DB.BUILDINGS[0]?DB.BUILDINGS[0].NAME:''),
+    'Ruangan':(DB.ROOMS[0]?DB.ROOMS[0].NAME:''),
+    'Status (TERSEDIA/DIPAKAI/DIPINJAM/RUSAK)':'TERSEDIA',
+    'Catatan':''
+  }];
+  const assetRef = DB.ASSETS.map(a=>({'Nama Aset':a.NAME}));
+  const buildingRef = DB.BUILDINGS.map(b=>({'Nama Gedung':b.NAME}));
+  const roomRef = DB.ROOMS.map(r=>({'Nama Ruangan':r.NAME,'Gedung':nameOf('BUILDINGS',r.BUILDING_ID)}));
+  const condRef = DB.ASSET_CONDITIONS.map(c=>({'Nama Kondisi':c.NAME}));
+  downloadExcelWorkbook(contoh,'Import Unit','Template_Import_Unit_Inventaris.xlsx',[
+    {name:'Daftar Aset (referensi)',rows:assetRef.length?assetRef:[{'Nama Aset':'(belum ada aset, buat dulu di menu Aset)'}]},
+    {name:'Daftar Gedung',rows:buildingRef.length?buildingRef:[{'Nama Gedung':'(belum ada gedung)'}]},
+    {name:'Daftar Ruangan',rows:roomRef.length?roomRef:[{'Nama Ruangan':'(belum ada ruangan)','Gedung':''}]},
+    {name:'Daftar Kondisi',rows:condRef.length?condRef:[{'Nama Kondisi':'(belum ada kondisi)'}]}
+  ]);
+}
+function unitImportForm(){
+  openModal('📥 Import Unit Inventaris (Excel)', `
+    <div class="hint" style="margin-bottom:12px">
+      1. Download template di bawah. Sheet "Daftar Aset/Gedung/Ruangan/Kondisi" berisi nama-nama yang sudah terdaftar di sistem — salin persis dari sana.<br>
+      2. Kolom <b>Nama Aset</b> wajib diisi dan harus sudah ada di Master Aset (buat dulu di menu Aset kalau belum ada).<br>
+      3. Kolom lain boleh dikosongkan; <b>No. Inventaris</b> otomatis dibuat kalau kosong.<br>
+      4. Upload kembali file yang sudah diisi, lalu klik "Proses Import".
+    </div>
+    <button type="button" class="btn btn-light btn-block" onclick="downloadUnitTemplate()" style="margin-bottom:14px">⬇️ Download Template Excel</button>
+    <div class="form-group">
+      <label>Upload File Excel (.xlsx)</label>
+      <input id="unitImportFile" type="file" accept=".xlsx,.xls">
+    </div>
+    <div id="unitImportResult"></div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Tutup</button>`,
+    `<button class="btn btn-primary" onclick="processUnitImport()">📤 Proses Import</button>`
+  ]);
+}
+async function processUnitImport(){
+  const resultEl = document.getElementById('unitImportResult');
+  try{
+    requirePerm('asset_unit.manage');
+    resultEl.innerHTML = '';
+    const rows = await readExcelFile(document.getElementById('unitImportFile'));
+    let success=0, skipped=0; const notes=[];
+    rows.forEach(function(r,idx){
+      const assetName = String(r['Nama Aset']||'').trim();
+      const asset = DB.ASSETS.find(a=>a.NAME.toLowerCase()===assetName.toLowerCase());
+      if(!asset){ skipped++; notes.push('Baris '+(idx+2)+': Nama Aset "'+assetName+'" tidak ditemukan di Master Aset, dilewati.'); return; }
+      const condName = String(r['Kondisi']||'').trim();
+      const cond = DB.ASSET_CONDITIONS.find(c=>c.NAME.toLowerCase()===condName.toLowerCase());
+      if(condName && !cond) notes.push('Baris '+(idx+2)+': kondisi "'+condName+'" tidak ditemukan, dikosongkan.');
+      const buildName = String(r['Gedung']||'').trim();
+      const building = DB.BUILDINGS.find(b=>b.NAME.toLowerCase()===buildName.toLowerCase());
+      if(buildName && !building) notes.push('Baris '+(idx+2)+': gedung "'+buildName+'" tidak ditemukan, dikosongkan.');
+      const roomName = String(r['Ruangan']||'').trim();
+      const room = DB.ROOMS.find(rm=>rm.NAME.toLowerCase()===roomName.toLowerCase() && (!building || rm.BUILDING_ID===building.ID));
+      if(roomName && !room) notes.push('Baris '+(idx+2)+': ruangan "'+roomName+'" tidak ditemukan, dikosongkan.');
+      let inv = String(r['No. Inventaris']||'').trim();
+      if(!inv){ DB.SEQ.ASSET_UNITS++; inv = 'INV-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSET_UNITS).padStart(5,'0'); }
+      const statusRaw = String(r['Status (TERSEDIA/DIPAKAI/DIPINJAM/RUSAK)']||'TERSEDIA').trim().toUpperCase();
+      const status = ['TERSEDIA','DIPAKAI','DIPINJAM','RUSAK'].includes(statusRaw) ? statusRaw : 'TERSEDIA';
+      DB.ASSET_UNITS.push({
+        ID:uid('AUN'), ASSET_ID:asset.ID, INVENTORY_NUMBER:inv, CONDITION_ID:cond?cond.ID:'',
+        BUILDING_ID:building?building.ID:'', ROOM_ID:room?room.ID:'', STATUS:status,
+        NOTE:String(r['Catatan']||''), CREATED_AT:nowStr()
+      });
+      success++;
+    });
+    if(success>0){
+      await audit('IMPORT','ASSET_UNITS','-','Import '+success+' unit inventaris dari Excel');
+      await saveDB();
+    }
+    resultEl.innerHTML = '<div class="'+(success>0?'toast success':'error')+'" style="position:static">'+
+      '✅ Berhasil import '+success+' unit'+(skipped?', '+skipped+' baris dilewati':'')+'.'+
+      (notes.length? '<div style="margin-top:8px;font-size:11.5px;text-align:left">'+notes.map(escapeHtml).join('<br>')+'</div>':'')+
+      '</div>';
+    if(success>0){ showToast(success+' unit berhasil diimpor.','success'); renderAssetUnits(); }
+  }catch(error){ resultEl.innerHTML = '<div class="error">'+escapeHtml(getErrorMessage(error))+'</div>'; }
 }
 
 /* =========================================================
