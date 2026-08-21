@@ -247,7 +247,7 @@ tbody tr:hover{background:#FAFBFE}
       <div>
         <div class="logo">🎫</div>
         <div class="login-title">Booking Tamu</div>
-        <div class="login-subtitle">Ajukan booking ruangan atau peminjaman barang tanpa perlu login. Pengajuan akan diverifikasi oleh pengelola sarpras.</div>
+        <div class="login-subtitle">Ajukan booking ruangan atau peminjaman barang tanpa perlu login. Booking oleh Tamu dikenakan biaya sesuai tarif yang berlaku (berbeda dengan pengguna internal). Pengajuan akan diverifikasi oleh pengelola sarpras.</div>
       </div>
       <button type="button" class="btn btn-light btn-sm" onclick="backToLoginFromGuest()">✕ Tutup</button>
     </div>
@@ -416,6 +416,8 @@ const PERMISSIONS = [
   ['booking.approve','Menyetujui/Menolak Booking','booking'],
   ['booking.cancel','Membatalkan Booking','booking'],
   ['booking.checkout','Checkout & Pengembalian Barang (Scan Barcode)','booking'],
+  ['stock.view','Melihat Stok Barang Habis Pakai','stock'],
+  ['stock.take','Mengambil Barang Habis Pakai','stock'],
   ['report.view','Melihat Laporan','report'],
   ['report.create','Membuat Laporan','report'],
   ['report.assign','Menugaskan Laporan','report'],
@@ -433,16 +435,16 @@ const DEFAULT_ROLES = [
   {CODE:'ADMIN',NAME:'Administrator',DESCRIPTION:'Akses penuh ke seluruh modul.',ALL:true},
   {CODE:'PENGELOLA',NAME:'Pengelola Sarpras',DESCRIPTION:'Mengelola operasional sarana & prasarana sehari-hari.',
     PERMS:['dashboard.view','asset.view','asset.manage','asset_unit.view','asset_unit.manage','room.view','room.manage',
-      'booking.view','booking.approve','booking.cancel','booking.checkout','report.view','report.assign','report.close',
+      'booking.view','booking.approve','booking.cancel','booking.checkout','stock.view','stock.take','report.view','report.assign','report.close',
       'maintenance.view','maintenance.create','maintenance.manage','audit.view']},
   {CODE:'PELAKSANA',NAME:'Pelaksana',DESCRIPTION:'Teknisi / petugas lapangan yang mengerjakan laporan & maintenance.',
-    PERMS:['dashboard.view','asset_unit.view','room.view','report.view','report.process','maintenance.view','maintenance.manage']},
+    PERMS:['dashboard.view','asset_unit.view','room.view','stock.view','stock.take','report.view','report.process','maintenance.view','maintenance.manage']},
   {CODE:'DOSEN',NAME:'Dosen',DESCRIPTION:'Pengguna sivitas akademik — dosen.',
-    PERMS:['dashboard.view','room.view','booking.view','booking.create','report.view','report.create']},
+    PERMS:['dashboard.view','room.view','booking.view','booking.create','stock.view','stock.take','report.view','report.create']},
   {CODE:'MAHASISWA',NAME:'Mahasiswa',DESCRIPTION:'Pengguna sivitas akademik — mahasiswa.',
-    PERMS:['dashboard.view','room.view','booking.view','booking.create','report.view','report.create']},
+    PERMS:['dashboard.view','room.view','booking.view','booking.create','stock.view','stock.take','report.view','report.create']},
   {CODE:'PIMPINAN',NAME:'Pimpinan',DESCRIPTION:'Akses monitoring & dashboard tingkat pimpinan.',
-    PERMS:['dashboard.view','asset.view','room.view','booking.view','report.view','maintenance.view','audit.view']}
+    PERMS:['dashboard.view','asset.view','room.view','booking.view','stock.view','report.view','maintenance.view','audit.view']}
 ];
 
 const MENUS = [
@@ -454,6 +456,7 @@ const MENUS = [
   {group:'Booking',code:'booking-room',name:'Booking Ruangan',icon:'🏢',route:'booking-room',perm:'booking.view',setting:'ENABLE_BOOKING'},
   {group:'Booking',code:'booking-asset',name:'Peminjaman Barang',icon:'📦',route:'booking-asset',perm:'booking.view',setting:'ENABLE_BOOKING'},
   {group:'Booking',code:'booking-checkout',name:'Checkout Barang (Scan)',icon:'🔦',route:'booking-checkout',perm:'booking.checkout'},
+  {group:'Booking',code:'stock-take',name:'Ambil Barang Habis Pakai',icon:'🧺',route:'stock-take',perm:'stock.view',setting:'ENABLE_STOCK'},
   {group:'Master Data',code:'master-units',name:'Unit / Fakultas',icon:'🏫',route:'master-units',perm:'setting.manage'},
   {group:'Master Data',code:'master-buildings',name:'Gedung',icon:'🏢',route:'master-buildings',perm:'room.manage'},
   {group:'Master Data',code:'master-rooms',name:'Ruangan',icon:'🚪',route:'master-rooms',perm:'room.manage'},
@@ -587,7 +590,7 @@ async function buildDefaultDB(){
     ROLES:[], USERS:[], UNITS:[], BUILDINGS:[], ROOMS:[],
     ASSET_CATEGORIES:[], ASSET_CONDITIONS:[], ASSETS:[], ASSET_UNITS:[],
     BOOKINGS:[], REPORT_CATEGORIES:[], REPORTS:[],
-    MAINTENANCE_TYPES:[], MAINTENANCE:[],
+    MAINTENANCE_TYPES:[], MAINTENANCE:[], STOCK_TAKEOUTS:[],
     APP_SETTINGS:{
       APP_NAME:'SIM-SARPRAS',
       APP_DESCRIPTION:'Sistem Informasi Manajemen Sarana dan Prasarana',
@@ -595,12 +598,13 @@ async function buildDefaultDB(){
       ENABLE_BOOKING:'TRUE',
       ENABLE_MAINTENANCE:'TRUE',
       ENABLE_REPORT:'TRUE',
+      ENABLE_STOCK:'TRUE',
       DEFAULT_BASE_FEE:0,
       DEFAULT_ASSET_BASE_FEE:0,
       DEFAULT_FACILITY_FEE:0
     },
     AUDIT_LOG:[],
-    SEQ:{ASSETS:0,ASSET_UNITS:0,BOOKINGS:0,REPORTS:0,MAINTENANCE:0}
+    SEQ:{ASSETS:0,ASSET_UNITS:0,BOOKINGS:0,REPORTS:0,MAINTENANCE:0,STOCK_TAKEOUTS:0}
   };
 
   DEFAULT_ROLES.forEach(r=>{
@@ -696,10 +700,32 @@ async function buildDefaultDB(){
 async function loadDB(){
   const raw = await storageGet(DB_KEY);
   if(raw){
-    try{ DB = JSON.parse(raw); return; }catch(e){ /* fallthrough to reseed */ }
+    try{ DB = JSON.parse(raw); migrateDB(); await saveDB(); return; }catch(e){ /* fallthrough to reseed */ }
   }
   DB = await buildDefaultDB();
+  migrateDB();
   await saveDB();
+}
+function migrateDB(){
+  if(!Array.isArray(DB.STOCK_TAKEOUTS)) DB.STOCK_TAKEOUTS = [];
+  if(!DB.SEQ) DB.SEQ = {};
+  if(DB.SEQ.STOCK_TAKEOUTS===undefined) DB.SEQ.STOCK_TAKEOUTS = 0;
+  if(!DB.APP_SETTINGS) DB.APP_SETTINGS = {};
+  if(DB.APP_SETTINGS.ENABLE_STOCK===undefined) DB.APP_SETTINGS.ENABLE_STOCK = 'TRUE';
+
+  // sinkronkan hak akses baru ke role yang sudah tersimpan sebelumnya (upgrade aplikasi)
+  const allPermCodes = PERMISSIONS.map(p=>p[0]);
+  (DB.ROLES||[]).forEach(function(role){
+    if(!Array.isArray(role.PERMS)) role.PERMS = [];
+    if(role.CODE==='ADMIN'){
+      role.PERMS = allPermCodes.slice();
+      return;
+    }
+    const def = DEFAULT_ROLES.find(r=>r.CODE===role.CODE);
+    if(def && !def.ALL){
+      def.PERMS.forEach(function(p){ if(!role.PERMS.includes(p)) role.PERMS.push(p); });
+    }
+  });
 }
 async function saveDB(){
   await storageSet(DB_KEY, JSON.stringify(DB));
@@ -881,6 +907,7 @@ function navigate(route){
     'booking-room':()=>renderBookings('ROOM'),
     'booking-asset':()=>renderBookings('ASSET'),
     'booking-checkout':renderCheckout,
+    'stock-take':renderStockTake,
     'master-units':()=>renderGeneric('UNITS'),
     'master-buildings':()=>renderGeneric('BUILDINGS'),
     'master-rooms':()=>renderGeneric('ROOMS'),
@@ -908,6 +935,7 @@ const ROUTE_SUBTITLES = {
   'booking-room':'Permohonan pemakaian ruangan',
   'booking-asset':'Peminjaman barang inventaris (bisa lebih dari 1 barang)',
   'booking-checkout':'Scan barcode untuk mengeluarkan / mengembalikan barang',
+  'stock-take':'Pengambilan barang habis pakai (ATK, dll) — tidak perlu dikembalikan',
   'master-units':'Unit / fakultas pengguna',
   'master-buildings':'Data gedung kampus',
   'master-rooms':'Data ruangan per gedung',
@@ -1108,6 +1136,7 @@ function renderGeneric(tableName){
         </div>
         <div class="toolbar-right">
           ${canManage ? `<button class="btn btn-primary" onclick="genericForm('${tableName}')">+ Tambah</button>` : ''}
+          ${(canManage && tableName==='ROOMS') ? `<button class="btn btn-light" onclick="roomImportForm()">📥 Import</button>` : ''}
         </div>
       </div>
       <div id="genTable"></div>
@@ -1211,6 +1240,82 @@ async function genericDelete(tableName,id){
   }catch(error){
     showToast(getErrorMessage(error),'error');
   }
+}
+
+/* =========================================================
+   IMPORT RUANGAN (Excel)
+========================================================= */
+function downloadRoomTemplate(){
+  const contoh = [{
+    'Kode Ruangan':'R999','Nama Ruangan':'Ruang Kelas 999',
+    'Gedung':(DB.BUILDINGS[0]?DB.BUILDINGS[0].NAME:''),
+    'Lantai':1,'Kapasitas':40,'Tarif Sewa (Rp/pemakaian)':0,
+    'Fasilitas':'AC, Proyektor','Status (TERSEDIA/MAINTENANCE/NONAKTIF)':'TERSEDIA','Deskripsi':''
+  }];
+  const buildingRef = DB.BUILDINGS.map(b=>({'Nama Gedung':b.NAME}));
+  downloadExcelWorkbook(contoh,'Import Ruangan','Template_Import_Ruangan.xlsx',[
+    {name:'Daftar Gedung (referensi)',rows:buildingRef.length?buildingRef:[{'Nama Gedung':'(belum ada gedung, buat dulu di menu Gedung)'}]},
+    {name:'Petunjuk',rows:[
+      {'Kolom':'Kode Ruangan / Nama Ruangan','Keterangan':'Wajib diisi.'},
+      {'Kolom':'Gedung','Keterangan':'Harus sama persis dengan nama di sheet Daftar Gedung. Kosongkan kalau tidak yakin.'},
+      {'Kolom':'Tarif Sewa','Keterangan':'Hanya berlaku untuk booking oleh Tamu. Booking internal selalu gratis.'},
+      {'Kolom':'Status','Keterangan':'Isi salah satu: TERSEDIA, MAINTENANCE, atau NONAKTIF.'}
+    ]}
+  ]);
+}
+function roomImportForm(){
+  openModal('📥 Import Data Ruangan (Excel)', `
+    <div class="hint" style="margin-bottom:12px">
+      1. Download template di bawah, lalu isi datanya. Kolom <b>Kode Ruangan</b> dan <b>Nama Ruangan</b> wajib diisi.<br>
+      2. Kolom <b>Gedung</b> sebaiknya sama persis dengan nama gedung yang sudah ada (lihat sheet "Daftar Gedung").<br>
+      3. Upload kembali file yang sudah diisi, lalu klik "Proses Import".
+    </div>
+    <button type="button" class="btn btn-light btn-block" onclick="downloadRoomTemplate()" style="margin-bottom:14px">⬇️ Download Template Excel</button>
+    <div class="form-group">
+      <label>Upload File Excel (.xlsx)</label>
+      <input id="roomImportFile" type="file" accept=".xlsx,.xls">
+    </div>
+    <div id="roomImportResult"></div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Tutup</button>`,
+    `<button class="btn btn-primary" onclick="processRoomImport()">📤 Proses Import</button>`
+  ]);
+}
+async function processRoomImport(){
+  const resultEl = document.getElementById('roomImportResult');
+  try{
+    requirePerm('room.manage');
+    resultEl.innerHTML = '';
+    const rows = await readExcelFile(document.getElementById('roomImportFile'));
+    let success=0, skipped=0; const notes=[];
+    rows.forEach(function(r,idx){
+      const code = String(r['Kode Ruangan']||'').trim();
+      const name = String(r['Nama Ruangan']||'').trim();
+      if(!code || !name){ skipped++; notes.push('Baris '+(idx+2)+': Kode/Nama Ruangan kosong, dilewati.'); return; }
+      const buildName = String(r['Gedung']||'').trim();
+      const building = DB.BUILDINGS.find(b=>b.NAME.toLowerCase()===buildName.toLowerCase());
+      if(buildName && !building) notes.push('Baris '+(idx+2)+': gedung "'+buildName+'" tidak ditemukan, dikosongkan.');
+      const statusRaw = String(r['Status (TERSEDIA/MAINTENANCE/NONAKTIF)']||'TERSEDIA').trim().toUpperCase();
+      const status = ['TERSEDIA','MAINTENANCE','NONAKTIF'].includes(statusRaw) ? statusRaw : 'TERSEDIA';
+      DB.ROOMS.push({
+        ID:uid('RM'), CODE:code, NAME:name, BUILDING_ID:building?building.ID:'',
+        FLOOR:r['Lantai']||'', CAPACITY:r['Kapasitas']||'',
+        RENTAL_FEE:Number(r['Tarif Sewa (Rp/pemakaian)'])||0,
+        FACILITIES:String(r['Fasilitas']||''), STATUS:status,
+        DESCRIPTION:String(r['Deskripsi']||''), CREATED_AT:nowStr()
+      });
+      success++;
+    });
+    if(success>0){
+      await audit('IMPORT','ROOMS','-','Import '+success+' ruangan dari Excel');
+      await saveDB();
+    }
+    resultEl.innerHTML = '<div class="'+(success>0?'toast success':'error')+'" style="position:static">'+
+      '✅ Berhasil import '+success+' ruangan'+(skipped?', '+skipped+' baris dilewati':'')+'.'+
+      (notes.length? '<div style="margin-top:8px;font-size:11.5px;text-align:left">'+notes.map(escapeHtml).join('<br>')+'</div>':'')+
+      '</div>';
+    if(success>0){ showToast(success+' ruangan berhasil diimpor.','success'); renderGeneric('ROOMS'); }
+  }catch(error){ resultEl.innerHTML = '<div class="error">'+escapeHtml(getErrorMessage(error))+'</div>'; }
 }
 
 /* =========================================================
@@ -1771,7 +1876,7 @@ function renderBookings(type){
   const canCreate = hasPermission(STATE.currentUser,'booking.create');
   content.innerHTML = `
     <div class="page-title">${type==='ROOM'?'🏢 Booking Ruangan':'📦 Peminjaman Barang'}</div>
-    <div class="page-subtitle">${type==='ROOM'?'Permohonan pemakaian ruangan.':'Permohonan peminjaman barang — bisa memilih lebih dari satu barang sekaligus.'}</div>
+    <div class="page-subtitle">${type==='ROOM'?'Permohonan pemakaian ruangan. Gratis untuk pengguna internal — biaya hanya berlaku untuk booking Tamu.':'Permohonan peminjaman barang — bisa memilih lebih dari satu barang sekaligus. Gratis untuk pengguna internal — biaya hanya berlaku untuk peminjaman Tamu.'}</div>
     <div class="card">
       <div class="tabs" id="bookingStatusTabs"></div>
       <div class="toolbar">
@@ -1830,57 +1935,36 @@ function renderBookingTable(){
 function bookingForm(type){
   if(type==='ASSET'){ assetBookingForm(); return; }
   openModal('Booking Ruangan', `
+    <div class="hint" style="margin-bottom:10px">🎓 Booking oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>. Biaya sewa hanya berlaku untuk booking oleh Tamu.</div>
     <div class="form-grid">
-      <div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID" onchange="onBookingItemChange('ROOM')">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>
+      <div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>
       <div><label>Tanggal *</label><input id="b_DATE" type="date" min="${todayStr()}"></div>
       <div></div>
       <div><label>Jam Mulai *</label><input id="b_START_TIME" type="time"></div>
       <div><label>Jam Selesai *</label><input id="b_END_TIME" type="time"></div>
-      <div><label>Harga Sewa Dasar Ruangan (Rp)</label><input id="b_BASE_FEE" type="number" value="${Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0}"></div>
-      <div></div>
       <div class="form-full" id="b_facilities_section" style="display:none">
-        <label>Tambahan biaya pemakaian fasilitas (AC, Sound System, dll)</label>
+        <label>Fasilitas tambahan yang dibutuhkan (AC, Sound System, dll — tanpa biaya)</label>
         <div id="b_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px"></div>
       </div>
       <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="b_PURPOSE" placeholder="Contoh: Rapat koordinasi prodi"></textarea></div>
     </div>
-    <div style="margin-top:8px;font-size:13px;color:#4B5468">Total estimasi: <span id="b_total_preview">-</span></div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveBooking('ROOM')">📤 Ajukan</button>`
   ]);
   setTimeout(function(){
-    onBookingItemChange('ROOM');
-    const baseEl = document.getElementById('b_BASE_FEE');
-    function updatePreview(){
-      const base = Number(baseEl.value)||0;
-      const selected = Array.from(document.querySelectorAll('.b_fac_chk:checked')).map(x=>x.dataset.fee?Number(x.dataset.fee):0);
-      const sumFacAssets = selected.reduce((s,v)=>s+v,0);
-      document.getElementById('b_total_preview').textContent = formatCurrency(base + sumFacAssets);
-    }
-    if(baseEl) baseEl.addEventListener('input', updatePreview);
     if(document.getElementById('b_facilities_list')){
       const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
-      const listHtml = facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="b_fac_chk" type="checkbox" data-fee="${(a.FACILITY_FEE||0)}" value="${a.ID}"> ${escapeHtml(a.NAME)} (${formatCurrency(a.FACILITY_FEE||0)})</label>`).join('');
+      const listHtml = facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="b_fac_chk" type="checkbox" value="${a.ID}"> ${escapeHtml(a.NAME)}</label>`).join('');
       document.getElementById('b_facilities_list').innerHTML = listHtml;
       if(facAssets.length) document.getElementById('b_facilities_section').style.display = 'block';
-      Array.from(document.querySelectorAll('.b_fac_chk')).forEach(el=>el.addEventListener('change', updatePreview));
     }
-    const sel = document.getElementById('b_ITEM_ID');
-    if(sel) sel.addEventListener('change', function(){ onBookingItemChange('ROOM'); updatePreview(); });
-    updatePreview();
   },50);
-}
-function onBookingItemChange(type){
-  const itemId = getValue('b_ITEM_ID');
-  const room = DB.ROOMS.find(r=>r.ID===itemId);
-  document.getElementById('b_BASE_FEE').value = room ? (room.RENTAL_FEE || Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0) : (Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0);
 }
 async function saveBooking(type){
   try{
     requirePerm('booking.create');
     const itemId = getValue('b_ITEM_ID'), date = getValue('b_DATE'), start = getValue('b_START_TIME'), end = getValue('b_END_TIME'), purpose = getValue('b_PURPOSE');
-    const baseFee = Number(getValue('b_BASE_FEE'))||0;
     if(!itemId || !date || !start || !end || !purpose){ showToast('Semua field wajib diisi.','warning'); return; }
     if(start>=end){ showToast('Jam selesai harus lebih besar dari jam mulai.','warning'); return; }
     const room = DB.ROOMS.find(r=>r.ID===itemId);
@@ -1890,17 +1974,13 @@ async function saveBooking(type){
     if(conflict){ showToast('Ruangan sudah dibooking pada jadwal tersebut. Pilih jadwal lain.','warning'); return; }
 
     const facilityChecks = Array.from(document.querySelectorAll('.b_fac_chk:checked')).map(x=>x.value);
-    let facilityFeeSum=0, facilityList=[];
-    facilityChecks.forEach(function(id){
-      const a = DB.ASSETS.find(x=>x.ID===id);
-      if(a){ facilityFeeSum += Number(a.FACILITY_FEE)||0; facilityList.push(a.NAME); }
-    });
+    const facilityList = facilityChecks.map(id=>{ const a=DB.ASSETS.find(x=>x.ID===id); return a?a.NAME:''; }).filter(Boolean);
 
     const data = {
       ID:uid('BKG'), TYPE:'ROOM', ITEM_ID:itemId, ITEM_NAME:room.NAME,
       USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME, IS_GUEST:'FALSE',
       DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-      BASE_FEE:baseFee, FACILITY_FEE:facilityFeeSum, TOTAL_FEE:baseFee+facilityFeeSum,
+      BASE_FEE:0, FACILITY_FEE:0, TOTAL_FEE:0,
       FACILITY_LIST:facilityList.join(', '),
       STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
     };
@@ -1908,7 +1988,7 @@ async function saveBooking(type){
     await audit('CREATE','BOOKINGS',data.ID,'Booking ruangan baru: '+room.NAME);
     await saveDB();
     closeModal();
-    showToast('Booking ruangan berhasil diajukan.','success');
+    showToast('Booking ruangan berhasil diajukan (gratis untuk pengguna internal).','success');
     renderBookings('ROOM');
   }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
@@ -1918,6 +1998,7 @@ function assetBookingForm(){
   STATE.assetCart = [];
   const loanable = DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE');
   openModal('Peminjaman Barang (Bisa Pilih Lebih dari 1)', `
+    <div class="hint" style="margin-bottom:10px">🎓 Peminjaman oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>. Biaya sewa hanya berlaku untuk peminjaman oleh Tamu.</div>
     <div class="form-grid">
       <div><label>Tanggal *</label><input id="ab_DATE" type="date" min="${todayStr()}"></div>
       <div></div>
@@ -1935,11 +2016,10 @@ function assetBookingForm(){
     </div>
     <div id="ab_cart_list" style="margin:10px 0"></div>
     <div class="form-full" id="ab_facilities_section" style="display:none">
-      <label>Tambahan biaya pemakaian fasilitas (AC, Sound System, dll)</label>
+      <label>Fasilitas tambahan yang dibutuhkan (AC, Sound System, dll — tanpa biaya)</label>
       <div id="ab_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px"></div>
     </div>
     <div class="form-group"><label>Tujuan / Keperluan *</label><textarea id="ab_PURPOSE" placeholder="Contoh: Peminjaman untuk acara seminar"></textarea></div>
-    <div style="margin-top:8px;font-size:13px;color:#4B5468">Total estimasi: <span id="ab_total_preview">Rp0</span></div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveAssetBooking()">📤 Ajukan</button>`
@@ -1951,10 +2031,9 @@ function assetBookingForm(){
     renderAssetCart();
     if(document.getElementById('ab_facilities_list')){
       const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
-      const listHtml = facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="ab_fac_chk" type="checkbox" data-fee="${(a.FACILITY_FEE||0)}" value="${a.ID}"> ${escapeHtml(a.NAME)} (${formatCurrency(a.FACILITY_FEE||0)})</label>`).join('');
+      const listHtml = facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="ab_fac_chk" type="checkbox" value="${a.ID}"> ${escapeHtml(a.NAME)}</label>`).join('');
       document.getElementById('ab_facilities_list').innerHTML = listHtml;
       if(facAssets.length) document.getElementById('ab_facilities_section').style.display = 'block';
-      Array.from(document.querySelectorAll('.ab_fac_chk')).forEach(el=>el.addEventListener('change', renderAssetCart));
     }
   },50);
 }
@@ -1965,9 +2044,8 @@ function updateAssetStockHint(){
   const assetId = getValue('ab_ASSET_SELECT');
   const hint = document.getElementById('ab_stock_hint');
   if(!assetId){ hint.textContent=''; return; }
-  const asset = DB.ASSETS.find(a=>a.ID===assetId);
   const stock = assetAvailableStock(assetId);
-  hint.textContent = 'Total unit terdaftar: '+stock+' · Harga sewa/pinjam: '+formatCurrency(asset?asset.RENTAL_FEE||0:0)+' /unit';
+  hint.textContent = 'Total unit terdaftar: '+stock;
 }
 function addAssetToCart(){
   const assetId = getValue('ab_ASSET_SELECT');
@@ -1976,7 +2054,7 @@ function addAssetToCart(){
   const asset = DB.ASSETS.find(a=>a.ID===assetId);
   const existing = STATE.assetCart.find(c=>c.ASSET_ID===assetId);
   if(existing) existing.QTY += qty;
-  else STATE.assetCart.push({ASSET_ID:assetId,ASSET_NAME:asset.NAME,QTY:qty,FEE_PER_UNIT:Number(asset.RENTAL_FEE)||0});
+  else STATE.assetCart.push({ASSET_ID:assetId,ASSET_NAME:asset.NAME,QTY:qty});
   renderAssetCart();
 }
 function removeAssetFromCart(assetId){
@@ -1989,21 +2067,14 @@ function renderAssetCart(){
   if(!STATE.assetCart.length){
     el.innerHTML = '<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>';
   }else{
-    el.innerHTML = `<div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th>Harga/Unit</th><th>Subtotal</th><th></th></tr></thead><tbody>
+    el.innerHTML = `<div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th></th></tr></thead><tbody>
       ${STATE.assetCart.map(c=>`<tr>
         <td>${escapeHtml(c.ASSET_NAME)}</td>
         <td>${c.QTY}</td>
-        <td>${escapeHtml(formatCurrency(c.FEE_PER_UNIT))}</td>
-        <td>${escapeHtml(formatCurrency(c.QTY*c.FEE_PER_UNIT))}</td>
         <td><button type="button" class="btn btn-danger btn-sm" onclick="removeAssetFromCart('${c.ASSET_ID}')">🗑️</button></td>
       </tr>`).join('')}
       </tbody></table></div>`;
   }
-  const cartTotal = STATE.assetCart.reduce((s,c)=>s+(c.QTY*c.FEE_PER_UNIT),0);
-  const selected = Array.from(document.querySelectorAll('.ab_fac_chk:checked')).map(x=>x.dataset.fee?Number(x.dataset.fee):0);
-  const facTotal = selected.reduce((s,v)=>s+v,0);
-  const totalEl = document.getElementById('ab_total_preview');
-  if(totalEl) totalEl.textContent = formatCurrency(cartTotal+facTotal);
 }
 async function saveAssetBooking(){
   try{
@@ -2029,14 +2100,9 @@ async function saveAssetBooking(){
     }
 
     const facilityChecks = Array.from(document.querySelectorAll('.ab_fac_chk:checked')).map(x=>x.value);
-    let facilityFeeSum = 0, facilityList = [];
-    facilityChecks.forEach(id=>{
-      const a = DB.ASSETS.find(x=>x.ID===id);
-      if(a){ facilityFeeSum += Number(a.FACILITY_FEE)||0; facilityList.push(a.NAME); }
-    });
+    const facilityList = facilityChecks.map(id=>{ const a=DB.ASSETS.find(x=>x.ID===id); return a?a.NAME:''; }).filter(Boolean);
 
-    const items = STATE.assetCart.map(c=>({ASSET_ID:c.ASSET_ID,ASSET_NAME:c.ASSET_NAME,QTY:c.QTY,FEE_PER_UNIT:c.FEE_PER_UNIT,ISSUED_UNIT_IDS:[],RETURNED_UNIT_IDS:[]}));
-    const itemsTotal = items.reduce((s,i)=>s+(i.QTY*i.FEE_PER_UNIT),0);
+    const items = STATE.assetCart.map(c=>({ASSET_ID:c.ASSET_ID,ASSET_NAME:c.ASSET_NAME,QTY:c.QTY,FEE_PER_UNIT:0,ISSUED_UNIT_IDS:[],RETURNED_UNIT_IDS:[]}));
     const itemName = items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
 
     const data = {
@@ -2044,7 +2110,7 @@ async function saveAssetBooking(){
       USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME, IS_GUEST:'FALSE',
       DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
       ITEMS: items,
-      BASE_FEE:itemsTotal, FACILITY_FEE:facilityFeeSum, TOTAL_FEE:itemsTotal+facilityFeeSum,
+      BASE_FEE:0, FACILITY_FEE:0, TOTAL_FEE:0,
       FACILITY_LIST: facilityList.join(', '),
       STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
     };
@@ -2052,7 +2118,7 @@ async function saveAssetBooking(){
     await audit('CREATE','BOOKINGS',data.ID,'Peminjaman barang baru: '+itemName);
     await saveDB();
     closeModal();
-    showToast('Peminjaman barang berhasil diajukan.','success');
+    showToast('Peminjaman barang berhasil diajukan (gratis untuk pengguna internal).','success');
     renderBookings('ASSET');
   }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
@@ -2205,10 +2271,13 @@ function renderGuestCart(){
     el.innerHTML = '<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>';
     return;
   }
-  el.innerHTML = `<div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th></th></tr></thead><tbody>
+  const total = STATE.guestCart.reduce((s,c)=>s+(c.QTY*c.FEE_PER_UNIT),0);
+  el.innerHTML = `<div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th>Harga/Unit</th><th>Subtotal</th><th></th></tr></thead><tbody>
     ${STATE.guestCart.map(c=>`<tr><td>${escapeHtml(c.ASSET_NAME)}</td><td>${c.QTY}</td>
+      <td>${escapeHtml(formatCurrency(c.FEE_PER_UNIT))}</td><td>${escapeHtml(formatCurrency(c.QTY*c.FEE_PER_UNIT))}</td>
       <td><button type="button" class="btn btn-danger btn-sm" onclick="removeGuestAssetFromCart('${c.ASSET_ID}')">🗑️</button></td></tr>`).join('')}
-    </tbody></table></div>`;
+    </tbody></table></div>
+    <div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">Total estimasi biaya: <b>${escapeHtml(formatCurrency(total))}</b></div>`;
 }
 async function submitGuestBooking(){
   try{
@@ -2385,6 +2454,105 @@ async function processCheckoutScan(barcode){
   }catch(error){
     showToast(getErrorMessage(error),'error');
   }
+}
+
+/* =========================================================
+   AMBIL BARANG — ASET HABIS PAKAI (tanpa pengembalian)
+========================================================= */
+function consumableAssets(){
+  return DB.ASSETS.filter(a=>String(a.TYPE).toUpperCase()==='HABIS_PAKAI' && String(a.ACTIVE).toUpperCase()==='TRUE');
+}
+function stockAvailable(assetId){
+  return DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId).length;
+}
+function renderStockTake(){
+  const content = document.getElementById('content');
+  const canTake = hasPermission(STATE.currentUser,'stock.take');
+  content.innerHTML = `
+    <div class="page-title">🧺 Ambil Barang Habis Pakai</div>
+    <div class="page-subtitle">Untuk barang habis pakai (ATK, dll) — barang yang diambil tidak perlu dikembalikan, langsung mengurangi stok. Gratis, tidak ada biaya.</div>
+    <div class="card">
+      <div class="card-title">Daftar Stok Barang Habis Pakai</div>
+      <div id="stockList"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">🧾 Riwayat Pengambilan Terbaru</div>
+      <div id="stockHistory"></div>
+    </div>
+  `;
+  renderStockList(canTake);
+  renderStockHistory();
+}
+function renderStockList(canTake){
+  const rows = consumableAssets();
+  document.getElementById('stockList').innerHTML = renderTableHtml(rows,
+    [['NAME','Nama Barang'],['CATEGORY_ID','Kategori']],
+    function(row){
+      const stock = stockAvailable(row.ID);
+      let html = `<span class="badge ${stock>0?'badge-green':'badge-red'}" style="margin-right:6px">Stok: ${stock}</span>`;
+      if(canTake){
+        html += `<button class="btn btn-primary btn-sm" ${stock<=0?'disabled':''} onclick="stockTakeForm('${row.ID}')">🧺 Ambil</button>`;
+      }
+      return html;
+    });
+  if(!rows.length){
+    document.getElementById('stockList').innerHTML = '<div class="empty-state"><div class="e-icon">📭</div>Belum ada aset dengan tipe "Habis Pakai". Tambahkan di menu Aset dengan kategori bertipe Habis Pakai.</div>';
+  }
+}
+function renderStockHistory(){
+  const el = document.getElementById('stockHistory');
+  if(!el) return;
+  const rows = (DB.STOCK_TAKEOUTS||[]).slice(0,20);
+  el.innerHTML = renderTableHtml(rows,
+    [['ASSET_NAME','Barang'],['QTY','Jumlah'],['USER_NAME','Diambil Oleh'],['PURPOSE','Keperluan'],['CREATED_AT','Waktu']],
+    function(){ return ''; });
+}
+function stockTakeForm(assetId){
+  const asset = DB.ASSETS.find(a=>a.ID===assetId);
+  if(!asset){ showToast('Barang tidak ditemukan.','error'); return; }
+  const stock = stockAvailable(assetId);
+  openModal('🧺 Ambil Barang: '+asset.NAME, `
+    <div class="hint" style="margin-bottom:10px">Stok tersedia saat ini: <b>${stock}</b>. Barang habis pakai tidak perlu dikembalikan.</div>
+    <div class="form-grid">
+      <div><label>Jumlah yang Diambil *</label><input id="st_QTY" type="number" min="1" max="${stock}" value="1"></div>
+      <div></div>
+      <div class="form-full"><label>Keperluan *</label><textarea id="st_PURPOSE" placeholder="Contoh: Kebutuhan ATK rapat prodi"></textarea></div>
+    </div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
+    `<button class="btn btn-primary" onclick="processStockTake('${assetId}')">🧺 Ambil Barang</button>`
+  ]);
+}
+async function processStockTake(assetId){
+  try{
+    requirePerm('stock.take');
+    const asset = DB.ASSETS.find(a=>a.ID===assetId);
+    if(!asset){ showToast('Barang tidak ditemukan.','error'); return; }
+    const qty = Number(getValue('st_QTY'))||0;
+    const purpose = getValue('st_PURPOSE');
+    if(qty<1){ showToast('Jumlah harus minimal 1.','warning'); return; }
+    if(!purpose){ showToast('Keperluan wajib diisi.','warning'); return; }
+    const stock = stockAvailable(assetId);
+    if(qty>stock){ showToast('Stok tidak mencukupi. Tersedia: '+stock+'.','warning'); return; }
+
+    // ambil N unit stok (FIFO) dan hapus dari inventaris karena habis pakai
+    const unitsToTake = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId).slice(0,qty);
+    const takenIds = unitsToTake.map(u=>u.ID);
+    DB.ASSET_UNITS = DB.ASSET_UNITS.filter(u=>!takenIds.includes(u.ID));
+
+    DB.SEQ.STOCK_TAKEOUTS++;
+    const data = {
+      ID:uid('STK'), ASSET_ID:assetId, ASSET_NAME:asset.NAME, QTY:qty,
+      USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME,
+      PURPOSE:purpose, CREATED_AT:nowStr()
+    };
+    DB.STOCK_TAKEOUTS.unshift(data);
+    await audit('TAKE','STOCK',data.ID,'Ambil barang habis pakai: '+asset.NAME+' x'+qty+' oleh '+STATE.currentUser.NAME);
+    await saveDB();
+    closeModal();
+    showToast('Barang berhasil diambil ('+qty+' '+asset.NAME+').','success');
+    renderStockTake();
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
 
 /* =========================================================
@@ -2637,7 +2805,7 @@ function renderUsers(){
     <div class="card">
       <div class="toolbar">
         <div class="toolbar-left"><input id="userSearch" class="search-box" placeholder="🔎 Cari pengguna..." oninput="filterUsers()"></div>
-        <div class="toolbar-right"><button class="btn btn-primary" onclick="userForm()">+ Tambah Pengguna</button></div>
+        <div class="toolbar-right"><button class="btn btn-primary" onclick="userForm()">+ Tambah Pengguna</button><button class="btn btn-light" onclick="userImportForm()">📥 Import</button></div>
       </div>
       <div id="usersTable"></div>
     </div>
@@ -2713,6 +2881,85 @@ async function userDelete(id){
     showToast('Pengguna dihapus.','success');
     renderUsers();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+
+/* =========================================================
+   IMPORT PENGGUNA (Excel)
+========================================================= */
+function downloadUserTemplate(){
+  const contoh = [{
+    'Nama Lengkap':'Contoh Nama','Username':'contoh.user','Password':'ganti123',
+    'Role':(DB.ROLES[0]?DB.ROLES[0].NAME:'Dosen'),'Email':'contoh@kampus.ac.id',
+    'Status (AKTIF/NONAKTIF)':'AKTIF'
+  }];
+  const roleRef = DB.ROLES.map(r=>({'Nama Role':r.NAME}));
+  downloadExcelWorkbook(contoh,'Import Pengguna','Template_Import_Pengguna.xlsx',[
+    {name:'Daftar Role (referensi)',rows:roleRef.length?roleRef:[{'Nama Role':'(belum ada role)'}]},
+    {name:'Petunjuk',rows:[
+      {'Kolom':'Nama Lengkap / Username','Keterangan':'Wajib diisi. Username harus unik (tidak boleh sama dengan yang sudah ada).'},
+      {'Kolom':'Password','Keterangan':'Kosongkan untuk memakai password default "sarpras123" (sebaiknya diganti setelah login pertama).'},
+      {'Kolom':'Role','Keterangan':'Harus sama persis dengan nama di sheet Daftar Role. Baris dilewati kalau role tidak ditemukan.'},
+      {'Kolom':'Status','Keterangan':'Isi AKTIF atau NONAKTIF. Kosongkan berarti AKTIF.'}
+    ]}
+  ]);
+}
+function userImportForm(){
+  openModal('📥 Import Data Pengguna (Excel)', `
+    <div class="hint" style="margin-bottom:12px">
+      1. Download template di bawah, lalu isi datanya. Kolom <b>Nama Lengkap</b>, <b>Username</b>, dan <b>Role</b> wajib diisi.<br>
+      2. Kolom <b>Role</b> harus sama persis dengan nama role yang sudah ada (lihat sheet "Daftar Role").<br>
+      3. Kolom <b>Password</b> boleh dikosongkan (akan memakai password default).<br>
+      4. Upload kembali file yang sudah diisi, lalu klik "Proses Import".
+    </div>
+    <button type="button" class="btn btn-light btn-block" onclick="downloadUserTemplate()" style="margin-bottom:14px">⬇️ Download Template Excel</button>
+    <div class="form-group">
+      <label>Upload File Excel (.xlsx)</label>
+      <input id="userImportFile" type="file" accept=".xlsx,.xls">
+    </div>
+    <div id="userImportResult"></div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Tutup</button>`,
+    `<button class="btn btn-primary" onclick="processUserImport()">📤 Proses Import</button>`
+  ]);
+}
+async function processUserImport(){
+  const resultEl = document.getElementById('userImportResult');
+  try{
+    requirePerm('user.manage');
+    resultEl.innerHTML = '';
+    const rows = await readExcelFile(document.getElementById('userImportFile'));
+    let success=0, skipped=0; const notes=[];
+    for(let idx=0; idx<rows.length; idx++){
+      const r = rows[idx];
+      const name = String(r['Nama Lengkap']||'').trim();
+      const username = String(r['Username']||'').trim();
+      if(!name || !username){ skipped++; notes.push('Baris '+(idx+2)+': Nama/Username kosong, dilewati.'); continue; }
+      const dup = DB.USERS.find(x=>x.USERNAME.toLowerCase()===username.toLowerCase());
+      if(dup){ skipped++; notes.push('Baris '+(idx+2)+': username "'+username+'" sudah digunakan, dilewati.'); continue; }
+      const roleName = String(r['Role']||'').trim();
+      const role = DB.ROLES.find(x=>x.NAME.toLowerCase()===roleName.toLowerCase());
+      if(!role){ skipped++; notes.push('Baris '+(idx+2)+': role "'+roleName+'" tidak ditemukan, dilewati.'); continue; }
+      const password = String(r['Password']||'').trim() || 'sarpras123';
+      const statusRaw = String(r['Status (AKTIF/NONAKTIF)']||'AKTIF').trim().toUpperCase();
+      const status = ['AKTIF','NONAKTIF'].includes(statusRaw) ? statusRaw : 'AKTIF';
+      DB.USERS.push({
+        ID:uid('USR'), NAME:name, USERNAME:username,
+        PASSWORD_HASH: await sha256Hex(password),
+        ROLE_ID:role.ID, ROLE_CODE:role.CODE, EMAIL:String(r['Email']||''), PHONE:'',
+        STATUS:status, CREATED_AT:nowStr()
+      });
+      success++;
+    }
+    if(success>0){
+      await audit('IMPORT','USERS','-','Import '+success+' pengguna dari Excel');
+      await saveDB();
+    }
+    resultEl.innerHTML = '<div class="'+(success>0?'toast success':'error')+'" style="position:static">'+
+      '✅ Berhasil import '+success+' pengguna'+(skipped?', '+skipped+' baris dilewati':'')+'.'+
+      (notes.length? '<div style="margin-top:8px;font-size:11.5px;text-align:left">'+notes.map(escapeHtml).join('<br>')+'</div>':'')+
+      '</div>';
+    if(success>0){ showToast(success+' pengguna berhasil diimpor.','success'); renderUsers(); }
+  }catch(error){ resultEl.innerHTML = '<div class="error">'+escapeHtml(getErrorMessage(error))+'</div>'; }
 }
 
 /* =========================================================
@@ -2849,7 +3096,9 @@ function renderApplicationSettings(){
         <div class="card-sub">Aktifkan / nonaktifkan modul dan atur harga dasar sewa/pinjam.</div>
         <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_BOOKING" ${settingBool('ENABLE_BOOKING')?'checked':''}> Modul Booking (Ruangan & Barang)</label><br>
         <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_REPORT" ${settingBool('ENABLE_REPORT')?'checked':''}> Modul Laporan Kerusakan</label><br>
-        <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_MAINTENANCE" ${settingBool('ENABLE_MAINTENANCE')?'checked':''}> Modul Maintenance</label>
+        <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_MAINTENANCE" ${settingBool('ENABLE_MAINTENANCE')?'checked':''}> Modul Maintenance</label><br>
+        <label class="checkline" style="margin-bottom:12px"><input type="checkbox" id="s_ENABLE_STOCK" ${settingBool('ENABLE_STOCK')?'checked':''}> Modul Ambil Barang Habis Pakai</label>
+        <div class="hint" style="margin-top:6px;margin-bottom:8px">💡 <b>Kebijakan biaya:</b> Booking ruangan & peminjaman barang oleh pengguna internal (login) untuk keperluan lembaga <b>selalu gratis</b>. Tarif di bawah ini hanya berlaku untuk booking oleh <b>Tamu</b> (menu Booking Tamu tanpa login).</div>
         <div style="margin-top:12px"><label>Default Harga Sewa Dasar Ruangan (Rp)</label><input id="s_DEFAULT_BASE_FEE" type="number" value="${escapeHtml(s.DEFAULT_BASE_FEE||0)}"></div>
         <div class="hint" style="margin-top:-8px;margin-bottom:8px">Dipakai jika suatu ruangan belum mempunyai tarif sewa sendiri.</div>
         <div><label>Default Harga Sewa Dasar Barang (Rp)</label><input id="s_DEFAULT_ASSET_BASE_FEE" type="number" value="${escapeHtml(s.DEFAULT_ASSET_BASE_FEE||0)}"></div>
@@ -2883,6 +3132,7 @@ async function saveModuleSettings(){
     DB.APP_SETTINGS.ENABLE_BOOKING = document.getElementById('s_ENABLE_BOOKING').checked ? 'TRUE':'FALSE';
     DB.APP_SETTINGS.ENABLE_REPORT = document.getElementById('s_ENABLE_REPORT').checked ? 'TRUE':'FALSE';
     DB.APP_SETTINGS.ENABLE_MAINTENANCE = document.getElementById('s_ENABLE_MAINTENANCE').checked ? 'TRUE':'FALSE';
+    DB.APP_SETTINGS.ENABLE_STOCK = document.getElementById('s_ENABLE_STOCK').checked ? 'TRUE':'FALSE';
     DB.APP_SETTINGS.DEFAULT_BASE_FEE = Number(getValue('s_DEFAULT_BASE_FEE'))||0;
     DB.APP_SETTINGS.DEFAULT_ASSET_BASE_FEE = Number(getValue('s_DEFAULT_ASSET_BASE_FEE'))||0;
     DB.APP_SETTINGS.DEFAULT_FACILITY_FEE = Number(getValue('s_DEFAULT_FACILITY_FEE'))||0;
