@@ -319,18 +319,86 @@ tbody tr:hover{background:#FAFBFE}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <!-- Library untuk baca/tulis file Excel (.xlsx) -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Firebase (sinkronisasi data real-time lintas perangkat) -->
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 
 <script>
 'use strict';
 
 /* =========================================================
-   STORAGE (persistent, per-user, via window.storage)
+   STORAGE (persistent, real-time sync via Firebase Firestore,
+   dengan fallback ke penyimpanan Claude / localStorage / memori)
 ========================================================= */
 const DB_KEY = 'simsarpras_db_v1';
 const SESSION_KEY = 'simsarpras_session_v1';
 
 const MEMORY_FALLBACK = {};
-let STORAGE_MODE = null; // 'claude' | 'local' | 'memory'
+let STORAGE_MODE = null; // 'firebase' | 'claude' | 'local' | 'memory'
+
+/* --- Konfigurasi Firebase project Anda --- */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyB_VJ-zWvKiN1PdG6ywFWw-OFn31nazn2s",
+  authDomain: "sarpras-68b7c.firebaseapp.com",
+  projectId: "sarpras-68b7c",
+  storageBucket: "sarpras-68b7c.firebasestorage.app",
+  messagingSenderId: "327008853033",
+  appId: "1:327008853033:web:30570043f0fe2b06661038",
+  measurementId: "G-R2KZFZCVQL"
+};
+const FIRESTORE_COLLECTION = 'sarpras_app';
+const FIRESTORE_DOC_ID = 'main_db';
+
+let firebaseApp = null;
+let firebaseDb = null;
+let firebaseUnsub = null;
+let FIREBASE_READY = false;
+let LAST_SYNCED_JSON = null; // untuk mendeteksi echo dari tulisan sendiri saat realtime listener aktif
+
+async function setupFirebase(){
+  try{
+    if(typeof firebase === 'undefined'){
+      console.warn('SDK Firebase tidak termuat (offline/diblokir jaringan). Memakai penyimpanan lokal.');
+      return;
+    }
+    firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
+    firebaseDb = firebase.firestore();
+    // Anonymous auth diperlukan supaya lolos Firestore Security Rules (request.auth != null)
+    await Promise.race([
+      firebase.auth().signInAnonymously(),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firebase auth timeout')),8000))
+    ]);
+    FIREBASE_READY = true;
+  }catch(error){
+    console.warn('Gagal terhubung ke Firebase, memakai penyimpanan lokal sebagai cadangan:',error);
+    FIREBASE_READY = false;
+  }
+}
+function startFirebaseSync(){
+  if(!FIREBASE_READY || !firebaseDb) return;
+  const ref = firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID);
+  firebaseUnsub = ref.onSnapshot(function(snap){
+    if(!snap.exists) return;
+    const data = snap.data();
+    const json = data && data.json;
+    if(!json || json===LAST_SYNCED_JSON) return; // bukan perubahan baru / hanya echo tulisan sendiri
+    LAST_SYNCED_JSON = json;
+    try{
+      DB = JSON.parse(json);
+      migrateDB();
+      try{ window.localStorage.setItem(DB_KEY,json); }catch(e){}
+      const modalOpen = document.getElementById('modalBackdrop') && !document.getElementById('modalBackdrop').classList.contains('hidden');
+      if(STATE.currentUser && !modalOpen && document.getElementById('app') && !document.getElementById('app').classList.contains('hidden')){
+        buildNavigation();
+        navigate(STATE.currentRoute);
+        showToast('🔄 Data diperbarui otomatis dari perangkat/pengguna lain.','success');
+      }
+    }catch(e){ console.warn('Gagal memproses pembaruan dari Firestore:',e); }
+  }, function(error){
+    console.warn('Koneksi realtime Firestore terputus:',error);
+  });
+}
 
 function hasClaudeStorage(){
   return typeof window.storage !== 'undefined' &&
@@ -348,7 +416,8 @@ function hasLocalStorage(){
 }
 function detectStorageMode(){
   if(STORAGE_MODE) return STORAGE_MODE;
-  if(hasClaudeStorage()) STORAGE_MODE = 'claude';
+  if(FIREBASE_READY) STORAGE_MODE = 'firebase';
+  else if(hasClaudeStorage()) STORAGE_MODE = 'claude';
   else if(hasLocalStorage()) STORAGE_MODE = 'local';
   else STORAGE_MODE = 'memory';
   return STORAGE_MODE;
@@ -357,6 +426,18 @@ function detectStorageMode(){
 async function storageGet(key){
   const mode = detectStorageMode();
   try{
+    if(mode==='firebase'){
+      // Sesi login (SESSION_KEY) sengaja TIDAK disinkronkan lintas perangkat —
+      // setiap perangkat/browser mengelola status login masing-masing.
+      if(key===SESSION_KEY){ return window.localStorage.getItem(key); }
+      const snap = await firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).get();
+      if(snap.exists && snap.data() && snap.data().json){
+        LAST_SYNCED_JSON = snap.data().json;
+        try{ window.localStorage.setItem(key, snap.data().json); }catch(e){}
+        return snap.data().json;
+      }
+      return window.localStorage.getItem(key); // dokumen belum ada (pertama kali pakai)
+    }
     if(mode==='claude'){
       const r = await window.storage.get(key,false);
       return r ? r.value : null;
@@ -366,19 +447,29 @@ async function storageGet(key){
     }
     return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key) ? MEMORY_FALLBACK[key] : null;
   }catch(e){
-    console.warn('storage get failed, falling back to memory:',e);
+    console.warn('storage get failed, falling back to local cache:',e);
+    try{ const v = window.localStorage.getItem(key); if(v!==null) return v; }catch(e2){}
     return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key) ? MEMORY_FALLBACK[key] : null;
   }
 }
 async function storageSet(key,value){
   const mode = detectStorageMode();
   try{
+    if(mode==='firebase'){
+      if(key===SESSION_KEY){ window.localStorage.setItem(key,value); return; }
+      LAST_SYNCED_JSON = value;
+      await firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).set({
+        json:value, updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      try{ window.localStorage.setItem(key,value); }catch(e){} // cache offline
+      return;
+    }
     if(mode==='claude'){ await window.storage.set(key,value,false); return; }
     if(mode==='local'){ window.localStorage.setItem(key,value); return; }
     MEMORY_FALLBACK[key] = value;
   }catch(e){
-    console.warn('storage set failed, falling back to memory for this session:',e);
-    MEMORY_FALLBACK[key] = value;
+    console.warn('storage set failed, falling back to local cache:',e);
+    try{ window.localStorage.setItem(key,value); }catch(e2){ MEMORY_FALLBACK[key] = value; }
   }
 }
 
@@ -417,7 +508,8 @@ const PERMISSIONS = [
   ['booking.cancel','Membatalkan Booking','booking'],
   ['booking.checkout','Checkout & Pengembalian Barang (Scan Barcode)','booking'],
   ['stock.view','Melihat Stok Barang Habis Pakai','stock'],
-  ['stock.take','Mengambil Barang Habis Pakai','stock'],
+  ['stock.take','Mengajukan Pengambilan Barang Habis Pakai','stock'],
+  ['stock.approve','Menyetujui & Memproses Pengambilan Barang','stock'],
   ['report.view','Melihat Laporan','report'],
   ['report.create','Membuat Laporan','report'],
   ['report.assign','Menugaskan Laporan','report'],
@@ -435,7 +527,7 @@ const DEFAULT_ROLES = [
   {CODE:'ADMIN',NAME:'Administrator',DESCRIPTION:'Akses penuh ke seluruh modul.',ALL:true},
   {CODE:'PENGELOLA',NAME:'Pengelola Sarpras',DESCRIPTION:'Mengelola operasional sarana & prasarana sehari-hari.',
     PERMS:['dashboard.view','asset.view','asset.manage','asset_unit.view','asset_unit.manage','room.view','room.manage',
-      'booking.view','booking.approve','booking.cancel','booking.checkout','stock.view','stock.take','report.view','report.assign','report.close',
+      'booking.view','booking.approve','booking.cancel','booking.checkout','stock.view','stock.take','stock.approve','report.view','report.assign','report.close',
       'maintenance.view','maintenance.create','maintenance.manage','audit.view']},
   {CODE:'PELAKSANA',NAME:'Pelaksana',DESCRIPTION:'Teknisi / petugas lapangan yang mengerjakan laporan & maintenance.',
     PERMS:['dashboard.view','asset_unit.view','room.view','stock.view','stock.take','report.view','report.process','maintenance.view','maintenance.manage']},
@@ -779,8 +871,11 @@ async function audit(action,module,recordId,description){
    INIT
 ========================================================= */
 async function init(){
+  showLoading('Menghubungkan ke server...');
+  await setupFirebase();
   showLoading('Memuat aplikasi...');
   await loadDB();
+  if(FIREBASE_READY) startFirebaseSync();
   const sessionUser = await storageGet(SESSION_KEY);
   hideLoading();
   updateStorageFooter();
@@ -833,6 +928,7 @@ function updateStorageFooter(){
   if(!el) return;
   const mode = detectStorageMode();
   const text = {
+    firebase:'SIM-SARPRAS · 🔄 tersinkron otomatis ke semua perangkat (Firebase)',
     claude:'SIM-SARPRAS · data tersimpan otomatis di penyimpanan Claude',
     local:'SIM-SARPRAS · data tersimpan otomatis di browser ini (localStorage)',
     memory:'SIM-SARPRAS · mode sesi sementara — data akan hilang saat halaman ditutup/dimuat ulang'
@@ -1935,31 +2031,19 @@ function renderBookingTable(){
 function bookingForm(type){
   if(type==='ASSET'){ assetBookingForm(); return; }
   openModal('Booking Ruangan', `
-    <div class="hint" style="margin-bottom:10px">🎓 Booking oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>. Biaya sewa hanya berlaku untuk booking oleh Tamu.</div>
+    <div class="hint" style="margin-bottom:10px">🎓 Booking oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>. Biaya sewa & fasilitas tambahan hanya berlaku untuk booking oleh Tamu.</div>
     <div class="form-grid">
       <div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>
       <div><label>Tanggal *</label><input id="b_DATE" type="date" min="${todayStr()}"></div>
       <div></div>
       <div><label>Jam Mulai *</label><input id="b_START_TIME" type="time"></div>
       <div><label>Jam Selesai *</label><input id="b_END_TIME" type="time"></div>
-      <div class="form-full" id="b_facilities_section" style="display:none">
-        <label>Fasilitas tambahan yang dibutuhkan (AC, Sound System, dll — tanpa biaya)</label>
-        <div id="b_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px"></div>
-      </div>
       <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="b_PURPOSE" placeholder="Contoh: Rapat koordinasi prodi"></textarea></div>
     </div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveBooking('ROOM')">📤 Ajukan</button>`
   ]);
-  setTimeout(function(){
-    if(document.getElementById('b_facilities_list')){
-      const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
-      const listHtml = facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="b_fac_chk" type="checkbox" value="${a.ID}"> ${escapeHtml(a.NAME)}</label>`).join('');
-      document.getElementById('b_facilities_list').innerHTML = listHtml;
-      if(facAssets.length) document.getElementById('b_facilities_section').style.display = 'block';
-    }
-  },50);
 }
 async function saveBooking(type){
   try{
@@ -1973,15 +2057,12 @@ async function saveBooking(type){
       ['MENUNGGU','DISETUJUI'].includes(b.STATUS) && start<b.END_TIME && end>b.START_TIME);
     if(conflict){ showToast('Ruangan sudah dibooking pada jadwal tersebut. Pilih jadwal lain.','warning'); return; }
 
-    const facilityChecks = Array.from(document.querySelectorAll('.b_fac_chk:checked')).map(x=>x.value);
-    const facilityList = facilityChecks.map(id=>{ const a=DB.ASSETS.find(x=>x.ID===id); return a?a.NAME:''; }).filter(Boolean);
-
     const data = {
       ID:uid('BKG'), TYPE:'ROOM', ITEM_ID:itemId, ITEM_NAME:room.NAME,
       USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME, IS_GUEST:'FALSE',
       DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
       BASE_FEE:0, FACILITY_FEE:0, TOTAL_FEE:0,
-      FACILITY_LIST:facilityList.join(', '),
+      FACILITY_LIST:'',
       STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
     };
     DB.BOOKINGS.push(data);
@@ -2015,10 +2096,6 @@ function assetBookingForm(){
       <div class="hint" id="ab_stock_hint"></div>
     </div>
     <div id="ab_cart_list" style="margin:10px 0"></div>
-    <div class="form-full" id="ab_facilities_section" style="display:none">
-      <label>Fasilitas tambahan yang dibutuhkan (AC, Sound System, dll — tanpa biaya)</label>
-      <div id="ab_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px"></div>
-    </div>
     <div class="form-group"><label>Tujuan / Keperluan *</label><textarea id="ab_PURPOSE" placeholder="Contoh: Peminjaman untuk acara seminar"></textarea></div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
@@ -2029,12 +2106,6 @@ function assetBookingForm(){
     if(sel) sel.addEventListener('change', updateAssetStockHint);
     updateAssetStockHint();
     renderAssetCart();
-    if(document.getElementById('ab_facilities_list')){
-      const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
-      const listHtml = facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="ab_fac_chk" type="checkbox" value="${a.ID}"> ${escapeHtml(a.NAME)}</label>`).join('');
-      document.getElementById('ab_facilities_list').innerHTML = listHtml;
-      if(facAssets.length) document.getElementById('ab_facilities_section').style.display = 'block';
-    }
   },50);
 }
 function assetAvailableStock(assetId){
@@ -2099,9 +2170,6 @@ async function saveAssetBooking(){
       }
     }
 
-    const facilityChecks = Array.from(document.querySelectorAll('.ab_fac_chk:checked')).map(x=>x.value);
-    const facilityList = facilityChecks.map(id=>{ const a=DB.ASSETS.find(x=>x.ID===id); return a?a.NAME:''; }).filter(Boolean);
-
     const items = STATE.assetCart.map(c=>({ASSET_ID:c.ASSET_ID,ASSET_NAME:c.ASSET_NAME,QTY:c.QTY,FEE_PER_UNIT:0,ISSUED_UNIT_IDS:[],RETURNED_UNIT_IDS:[]}));
     const itemName = items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
 
@@ -2111,7 +2179,7 @@ async function saveAssetBooking(){
       DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
       ITEMS: items,
       BASE_FEE:0, FACILITY_FEE:0, TOTAL_FEE:0,
-      FACILITY_LIST: facilityList.join(', '),
+      FACILITY_LIST: '',
       STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
     };
     DB.BOOKINGS.push(data);
@@ -2208,6 +2276,7 @@ function renderGuestBookingForm(){
 }
 function renderGuestRoomForm(){
   const body = document.getElementById('guestFormBody');
+  const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
   body.innerHTML = `
     <div class="form-grid">
       <div class="form-full"><label>Ruangan *</label><select id="gr_ITEM_ID" onchange="onGuestRoomChange()">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>
@@ -2215,6 +2284,12 @@ function renderGuestRoomForm(){
       <div></div>
       <div><label>Jam Mulai *</label><input id="gr_START_TIME" type="time"></div>
       <div><label>Jam Selesai *</label><input id="gr_END_TIME" type="time"></div>
+      ${facAssets.length ? `<div class="form-full">
+        <label>Fasilitas Tambahan (biaya berlaku)</label>
+        <div id="gr_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+          ${facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="gr_fac_chk" type="checkbox" data-fee="${a.FACILITY_FEE||0}" value="${a.ID}" onchange="onGuestRoomChange()"> ${escapeHtml(a.NAME)} (${escapeHtml(formatCurrency(a.FACILITY_FEE||0))})</label>`).join('')}
+        </div>
+      </div>` : ''}
       <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="gr_PURPOSE" placeholder="Contoh: Rapat koordinasi"></textarea></div>
     </div>
     <div class="hint" id="gr_fee_hint" style="margin-top:6px"></div>
@@ -2225,11 +2300,15 @@ function onGuestRoomChange(){
   const id = getValue('gr_ITEM_ID');
   const room = DB.ROOMS.find(r=>r.ID===id);
   const hint = document.getElementById('gr_fee_hint');
-  if(hint) hint.textContent = room ? ('Estimasi harga sewa dasar: '+formatCurrency(room.RENTAL_FEE||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0)) : '';
+  if(!hint) return;
+  const baseFee = room ? (Number(room.RENTAL_FEE)||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0) : 0;
+  const facTotal = Array.from(document.querySelectorAll('.gr_fac_chk:checked')).reduce((s,x)=>s+(Number(x.dataset.fee)||0),0);
+  hint.textContent = room ? ('Estimasi total biaya: '+formatCurrency(baseFee+facTotal)+' (sewa ruangan: '+formatCurrency(baseFee)+(facTotal?' + fasilitas: '+formatCurrency(facTotal):'')+')') : '';
 }
 function renderGuestAssetForm(){
   const body = document.getElementById('guestFormBody');
   const loanable = DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE');
+  const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
   body.innerHTML = `
     <div class="form-grid">
       <div><label>Tanggal *</label><input id="ga_DATE" type="date" min="${todayStr()}"></div>
@@ -2246,6 +2325,12 @@ function renderGuestAssetForm(){
       </div>
     </div>
     <div id="ga_cart_list" style="margin:10px 0"></div>
+    ${facAssets.length ? `<div class="form-group">
+      <label>Fasilitas Tambahan (biaya berlaku)</label>
+      <div id="ga_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        ${facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="ga_fac_chk" type="checkbox" data-fee="${a.FACILITY_FEE||0}" value="${a.ID}" onchange="renderGuestCart()"> ${escapeHtml(a.NAME)} (${escapeHtml(formatCurrency(a.FACILITY_FEE||0))})</label>`).join('')}
+      </div>
+    </div>` : ''}
     <div class="form-group"><label>Tujuan / Keperluan *</label><textarea id="ga_PURPOSE" placeholder="Contoh: Peminjaman untuk acara seminar"></textarea></div>
   `;
   renderGuestCart();
@@ -2267,17 +2352,19 @@ function removeGuestAssetFromCart(assetId){
 function renderGuestCart(){
   const el = document.getElementById('ga_cart_list');
   if(!el) return;
+  const facTotal = Array.from(document.querySelectorAll('.ga_fac_chk:checked')).reduce((s,x)=>s+(Number(x.dataset.fee)||0),0);
   if(!STATE.guestCart.length){
-    el.innerHTML = '<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>';
+    el.innerHTML = '<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>'+
+      (facTotal ? '<div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">Biaya fasilitas tambahan: <b>'+escapeHtml(formatCurrency(facTotal))+'</b></div>' : '');
     return;
   }
-  const total = STATE.guestCart.reduce((s,c)=>s+(c.QTY*c.FEE_PER_UNIT),0);
+  const itemsTotal = STATE.guestCart.reduce((s,c)=>s+(c.QTY*c.FEE_PER_UNIT),0);
   el.innerHTML = `<div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th>Harga/Unit</th><th>Subtotal</th><th></th></tr></thead><tbody>
     ${STATE.guestCart.map(c=>`<tr><td>${escapeHtml(c.ASSET_NAME)}</td><td>${c.QTY}</td>
       <td>${escapeHtml(formatCurrency(c.FEE_PER_UNIT))}</td><td>${escapeHtml(formatCurrency(c.QTY*c.FEE_PER_UNIT))}</td>
       <td><button type="button" class="btn btn-danger btn-sm" onclick="removeGuestAssetFromCart('${c.ASSET_ID}')">🗑️</button></td></tr>`).join('')}
     </tbody></table></div>
-    <div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">Total estimasi biaya: <b>${escapeHtml(formatCurrency(total))}</b></div>`;
+    <div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">Total estimasi biaya: <b>${escapeHtml(formatCurrency(itemsTotal+facTotal))}</b>${facTotal?' (termasuk fasilitas: '+escapeHtml(formatCurrency(facTotal))+')':''}</div>`;
 }
 async function submitGuestBooking(){
   try{
@@ -2298,11 +2385,17 @@ async function submitGuestBooking(){
       if(conflict){ showToast('Ruangan sudah dibooking pada jadwal tersebut. Pilih jadwal lain.','warning'); return; }
 
       const baseFee = Number(room.RENTAL_FEE)||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0;
+      const facilityChecks = Array.from(document.querySelectorAll('.gr_fac_chk:checked')).map(x=>x.value);
+      let facilityFeeSum=0, facilityList=[];
+      facilityChecks.forEach(function(id){
+        const a = DB.ASSETS.find(x=>x.ID===id);
+        if(a){ facilityFeeSum += Number(a.FACILITY_FEE)||0; facilityList.push(a.NAME); }
+      });
       const data = {
         ID:uid('BKG'), TYPE:'ROOM', ITEM_ID:itemId, ITEM_NAME:room.NAME,
         USER_ID:'', USER_NAME:name+' (Tamu)', IS_GUEST:'TRUE', GUEST_CONTACT:contact, GUEST_INSTANSI:instansi,
         DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-        BASE_FEE:baseFee, FACILITY_FEE:0, TOTAL_FEE:baseFee, FACILITY_LIST:'',
+        BASE_FEE:baseFee, FACILITY_FEE:facilityFeeSum, TOTAL_FEE:baseFee+facilityFeeSum, FACILITY_LIST:facilityList.join(', '),
         STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
       };
       DB.BOOKINGS.push(data);
@@ -2327,13 +2420,19 @@ async function submitGuestBooking(){
       }
 
       const items = STATE.guestCart.map(c=>({ASSET_ID:c.ASSET_ID,ASSET_NAME:c.ASSET_NAME,QTY:c.QTY,FEE_PER_UNIT:c.FEE_PER_UNIT,ISSUED_UNIT_IDS:[],RETURNED_UNIT_IDS:[]}));
-      const itemsTotal = items.reduce((s,i)=>s+(i.QTY*i.FEE_PER_UNIT),0);
+      const itemsSubtotal = items.reduce((s,i)=>s+(i.QTY*i.FEE_PER_UNIT),0);
       const itemName = items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
+      const facilityChecks = Array.from(document.querySelectorAll('.ga_fac_chk:checked')).map(x=>x.value);
+      let facilityFeeSum=0, facilityList=[];
+      facilityChecks.forEach(function(id){
+        const a = DB.ASSETS.find(x=>x.ID===id);
+        if(a){ facilityFeeSum += Number(a.FACILITY_FEE)||0; facilityList.push(a.NAME); }
+      });
       const data = {
         ID:uid('BKG'), TYPE:'ASSET', ITEM_ID:'', ITEM_NAME:itemName,
         USER_ID:'', USER_NAME:name+' (Tamu)', IS_GUEST:'TRUE', GUEST_CONTACT:contact, GUEST_INSTANSI:instansi,
         DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-        ITEMS:items, BASE_FEE:itemsTotal, FACILITY_FEE:0, TOTAL_FEE:itemsTotal, FACILITY_LIST:'',
+        ITEMS:items, BASE_FEE:itemsSubtotal, FACILITY_FEE:facilityFeeSum, TOTAL_FEE:itemsSubtotal+facilityFeeSum, FACILITY_LIST:facilityList.join(', '),
         STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
       };
       DB.BOOKINGS.push(data);
@@ -2354,6 +2453,7 @@ function showGuestSuccess(data){
       <div style="margin-top:14px;text-align:left">
         <div class="kv"><span>Item</span><b>${escapeHtml(data.ITEM_NAME)}</b></div>
         <div class="kv"><span>Tanggal</span><b>${escapeHtml(data.DATE)}, ${escapeHtml(data.START_TIME)}–${escapeHtml(data.END_TIME)}</b></div>
+        <div class="kv"><span>Total Estimasi Biaya</span><b>${escapeHtml(formatCurrency(data.TOTAL_FEE||0))}</b></div>
         <div class="kv"><span>Status</span><b>Menunggu Persetujuan</b></div>
       </div>
       <div style="display:flex;gap:8px;margin-top:18px">
@@ -2457,30 +2557,49 @@ async function processCheckoutScan(barcode){
 }
 
 /* =========================================================
-   AMBIL BARANG — ASET HABIS PAKAI (tanpa pengembalian)
+   AMBIL BARANG — ASET HABIS PAKAI
+   Alur: Ajukan (stock.take) -> Setujui/Tolak (stock.approve)
+         -> Scan / Tandai Diambil (stock.approve) -> Selesai
 ========================================================= */
 function consumableAssets(){
   return DB.ASSETS.filter(a=>String(a.TYPE).toUpperCase()==='HABIS_PAKAI' && String(a.ACTIVE).toUpperCase()==='TRUE');
 }
+function stockReserved(assetId){
+  return (DB.STOCK_TAKEOUTS||[])
+    .filter(t=>t.ASSET_ID===assetId && ['MENUNGGU','DISETUJUI'].includes(t.STATUS))
+    .reduce((sum,t)=>sum + (Number(t.QTY)-Number(t.QTY_TAKEN||0)), 0);
+}
 function stockAvailable(assetId){
-  return DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId).length;
+  const total = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId).length;
+  return Math.max(total - stockReserved(assetId), 0);
 }
 function renderStockTake(){
   const content = document.getElementById('content');
   const canTake = hasPermission(STATE.currentUser,'stock.take');
+  const canApprove = hasPermission(STATE.currentUser,'stock.approve');
   content.innerHTML = `
     <div class="page-title">🧺 Ambil Barang Habis Pakai</div>
-    <div class="page-subtitle">Untuk barang habis pakai (ATK, dll) — barang yang diambil tidak perlu dikembalikan, langsung mengurangi stok. Gratis, tidak ada biaya.</div>
+    <div class="page-subtitle">Untuk barang habis pakai (ATK, dll). Alur: ajukan permintaan → disetujui pengelola → konfirmasi pengambilan (scan/manual). Gratis, tidak ada biaya.</div>
     <div class="card">
-      <div class="card-title">Daftar Stok Barang Habis Pakai</div>
+      <div class="card-title">Daftar Stok & Ajukan Permintaan</div>
       <div id="stockList"></div>
     </div>
+    ${canApprove ? `
     <div class="card">
-      <div class="card-title">🧾 Riwayat Pengambilan Terbaru</div>
+      <div class="card-title">🕓 Menunggu Persetujuan</div>
+      <div id="stockPendingList"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">📦 Sudah Disetujui — Menunggu Diambil</div>
+      <div id="stockPickupList"></div>
+    </div>` : ''}
+    <div class="card">
+      <div class="card-title">🧾 Riwayat</div>
       <div id="stockHistory"></div>
     </div>
   `;
   renderStockList(canTake);
+  if(canApprove){ renderStockPendingList(); renderStockPickupList(); }
   renderStockHistory();
 }
 function renderStockList(canTake){
@@ -2489,9 +2608,9 @@ function renderStockList(canTake){
     [['NAME','Nama Barang'],['CATEGORY_ID','Kategori']],
     function(row){
       const stock = stockAvailable(row.ID);
-      let html = `<span class="badge ${stock>0?'badge-green':'badge-red'}" style="margin-right:6px">Stok: ${stock}</span>`;
+      let html = `<span class="badge ${stock>0?'badge-green':'badge-red'}" style="margin-right:6px">Tersedia: ${stock}</span>`;
       if(canTake){
-        html += `<button class="btn btn-primary btn-sm" ${stock<=0?'disabled':''} onclick="stockTakeForm('${row.ID}')">🧺 Ambil</button>`;
+        html += `<button class="btn btn-primary btn-sm" ${stock<=0?'disabled':''} onclick="stockRequestForm('${row.ID}')">🧺 Ajukan</button>`;
       }
       return html;
     });
@@ -2499,31 +2618,23 @@ function renderStockList(canTake){
     document.getElementById('stockList').innerHTML = '<div class="empty-state"><div class="e-icon">📭</div>Belum ada aset dengan tipe "Habis Pakai". Tambahkan di menu Aset dengan kategori bertipe Habis Pakai.</div>';
   }
 }
-function renderStockHistory(){
-  const el = document.getElementById('stockHistory');
-  if(!el) return;
-  const rows = (DB.STOCK_TAKEOUTS||[]).slice(0,20);
-  el.innerHTML = renderTableHtml(rows,
-    [['ASSET_NAME','Barang'],['QTY','Jumlah'],['USER_NAME','Diambil Oleh'],['PURPOSE','Keperluan'],['CREATED_AT','Waktu']],
-    function(){ return ''; });
-}
-function stockTakeForm(assetId){
+function stockRequestForm(assetId){
   const asset = DB.ASSETS.find(a=>a.ID===assetId);
   if(!asset){ showToast('Barang tidak ditemukan.','error'); return; }
   const stock = stockAvailable(assetId);
-  openModal('🧺 Ambil Barang: '+asset.NAME, `
-    <div class="hint" style="margin-bottom:10px">Stok tersedia saat ini: <b>${stock}</b>. Barang habis pakai tidak perlu dikembalikan.</div>
+  openModal('🧺 Ajukan Pengambilan: '+asset.NAME, `
+    <div class="hint" style="margin-bottom:10px">Stok tersedia saat ini: <b>${stock}</b>. Permintaan akan diproses setelah disetujui pengelola sarpras.</div>
     <div class="form-grid">
-      <div><label>Jumlah yang Diambil *</label><input id="st_QTY" type="number" min="1" max="${stock}" value="1"></div>
+      <div><label>Jumlah yang Diminta *</label><input id="st_QTY" type="number" min="1" max="${stock}" value="1"></div>
       <div></div>
       <div class="form-full"><label>Keperluan *</label><textarea id="st_PURPOSE" placeholder="Contoh: Kebutuhan ATK rapat prodi"></textarea></div>
     </div>
   `, [
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
-    `<button class="btn btn-primary" onclick="processStockTake('${assetId}')">🧺 Ambil Barang</button>`
+    `<button class="btn btn-primary" onclick="processStockRequest('${assetId}')">📤 Ajukan</button>`
   ]);
 }
-async function processStockTake(assetId){
+async function processStockRequest(assetId){
   try{
     requirePerm('stock.take');
     const asset = DB.ASSETS.find(a=>a.ID===assetId);
@@ -2535,24 +2646,147 @@ async function processStockTake(assetId){
     const stock = stockAvailable(assetId);
     if(qty>stock){ showToast('Stok tidak mencukupi. Tersedia: '+stock+'.','warning'); return; }
 
-    // ambil N unit stok (FIFO) dan hapus dari inventaris karena habis pakai
-    const unitsToTake = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId).slice(0,qty);
-    const takenIds = unitsToTake.map(u=>u.ID);
-    DB.ASSET_UNITS = DB.ASSET_UNITS.filter(u=>!takenIds.includes(u.ID));
-
     DB.SEQ.STOCK_TAKEOUTS++;
     const data = {
-      ID:uid('STK'), ASSET_ID:assetId, ASSET_NAME:asset.NAME, QTY:qty,
+      ID:uid('STK'), ASSET_ID:assetId, ASSET_NAME:asset.NAME, QTY:qty, QTY_TAKEN:0,
       USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME,
-      PURPOSE:purpose, CREATED_AT:nowStr()
+      PURPOSE:purpose, STATUS:'MENUNGGU',
+      APPROVED_BY:'', APPROVED_AT:'', REJECT_NOTE:'', TAKEN_AT:'',
+      CREATED_AT:nowStr()
     };
     DB.STOCK_TAKEOUTS.unshift(data);
-    await audit('TAKE','STOCK',data.ID,'Ambil barang habis pakai: '+asset.NAME+' x'+qty+' oleh '+STATE.currentUser.NAME);
+    await audit('CREATE','STOCK',data.ID,'Ajukan pengambilan barang: '+asset.NAME+' x'+qty+' oleh '+STATE.currentUser.NAME);
     await saveDB();
     closeModal();
-    showToast('Barang berhasil diambil ('+qty+' '+asset.NAME+').','success');
+    showToast('Permintaan pengambilan barang berhasil diajukan. Menunggu persetujuan.','success');
     renderStockTake();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+
+/* --- Persetujuan (pengelola) --- */
+function renderStockPendingList(){
+  const el = document.getElementById('stockPendingList');
+  if(!el) return;
+  const rows = (DB.STOCK_TAKEOUTS||[]).filter(t=>t.STATUS==='MENUNGGU');
+  el.innerHTML = renderTableHtml(rows,
+    [['ASSET_NAME','Barang'],['QTY','Jumlah'],['USER_NAME','Pemohon'],['PURPOSE','Keperluan'],['CREATED_AT','Diajukan']],
+    function(row){
+      return `<button class="btn btn-success btn-sm" onclick="approveStockRequest('${row.ID}')">✅ Setujui</button>
+        <button class="btn btn-danger btn-sm" onclick="rejectStockRequest('${row.ID}')">✕ Tolak</button>`;
+    });
+  if(!rows.length){ el.innerHTML = '<div class="empty-state" style="padding:16px"><div class="e-icon">✅</div>Tidak ada permintaan yang menunggu persetujuan.</div>'; }
+}
+async function approveStockRequest(id){
+  try{
+    requirePerm('stock.approve');
+    const req = DB.STOCK_TAKEOUTS.find(t=>t.ID===id);
+    if(!req){ showToast('Permintaan tidak ditemukan.','error'); return; }
+    req.STATUS = 'DISETUJUI';
+    req.APPROVED_BY = STATE.currentUser.NAME;
+    req.APPROVED_AT = nowStr();
+    await audit('APPROVE','STOCK',id,'Setujui pengambilan: '+req.ASSET_NAME+' x'+req.QTY);
+    await saveDB();
+    showToast('Permintaan disetujui. Barang siap dikonfirmasi pengambilannya.','success');
+    renderStockTake();
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+async function rejectStockRequest(id){
+  try{
+    requirePerm('stock.approve');
+    const note = prompt('Alasan penolakan (opsional):','');
+    if(note===null) return; // batal
+    const req = DB.STOCK_TAKEOUTS.find(t=>t.ID===id);
+    if(!req){ showToast('Permintaan tidak ditemukan.','error'); return; }
+    req.STATUS = 'DITOLAK';
+    req.REJECT_NOTE = note || '';
+    req.APPROVED_BY = STATE.currentUser.NAME;
+    req.APPROVED_AT = nowStr();
+    await audit('REJECT','STOCK',id,'Tolak pengambilan: '+req.ASSET_NAME+' x'+req.QTY+(note?' - '+note:''));
+    await saveDB();
+    showToast('Permintaan ditolak.','warning');
+    renderStockTake();
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+
+/* --- Konfirmasi pengambilan: scan QR per-unit atau tandai manual --- */
+function renderStockPickupList(){
+  const el = document.getElementById('stockPickupList');
+  if(!el) return;
+  const rows = (DB.STOCK_TAKEOUTS||[]).filter(t=>t.STATUS==='DISETUJUI');
+  el.innerHTML = renderTableHtml(rows,
+    [['ASSET_NAME','Barang'],['QTY','Diminta'],['QTY_TAKEN','Sudah Diambil'],['USER_NAME','Pemohon'],['APPROVED_BY','Disetujui Oleh']],
+    function(row){
+      const sisa = Number(row.QTY)-Number(row.QTY_TAKEN||0);
+      return `<button class="btn btn-primary btn-sm" onclick="scanStockPickup('${row.ID}')">🔳 Scan Ambil (sisa ${sisa})</button>
+        <button class="btn btn-light btn-sm" onclick="manualCompleteStockPickup('${row.ID}')">✅ Tandai Selesai Manual</button>`;
+    });
+  if(!rows.length){ el.innerHTML = '<div class="empty-state" style="padding:16px"><div class="e-icon">📦</div>Tidak ada barang yang menunggu diambil.</div>'; }
+}
+function scanStockPickup(reqId){
+  const req = DB.STOCK_TAKEOUTS.find(t=>t.ID===reqId);
+  if(!req){ showToast('Permintaan tidak ditemukan.','error'); return; }
+  openQrScanner(function(code){ processStockPickupScan(reqId, code); });
+}
+async function processStockPickupScan(reqId, code){
+  try{
+    requirePerm('stock.approve');
+    const req = DB.STOCK_TAKEOUTS.find(t=>t.ID===reqId);
+    if(!req){ showToast('Permintaan tidak ditemukan.','error'); return; }
+    if(req.STATUS!=='DISETUJUI'){ showToast('Permintaan ini sudah tidak berstatus disetujui.','warning'); return; }
+    const unit = DB.ASSET_UNITS.find(u=>u.ASSET_ID===req.ASSET_ID && u.INVENTORY_NUMBER===code);
+    if(!unit){
+      showToast('Kode "'+code+'" tidak sesuai dengan barang "'+req.ASSET_NAME+'" yang disetujui.','warning');
+      return;
+    }
+    DB.ASSET_UNITS = DB.ASSET_UNITS.filter(u=>u.ID!==unit.ID);
+    req.QTY_TAKEN = Number(req.QTY_TAKEN||0) + 1;
+    const sisa = Number(req.QTY) - req.QTY_TAKEN;
+    if(sisa<=0){
+      req.STATUS = 'DIAMBIL';
+      req.TAKEN_AT = nowStr();
+      await audit('TAKE','STOCK',req.ID,'Pengambilan selesai (scan): '+req.ASSET_NAME+' x'+req.QTY);
+      await saveDB();
+      showToast('✅ Semua barang berhasil dikonfirmasi diambil ('+req.QTY+' '+req.ASSET_NAME+').','success');
+      renderStockTake();
+    }else{
+      await audit('TAKE','STOCK',req.ID,'Scan 1 unit '+req.ASSET_NAME+' (sisa '+sisa+')');
+      await saveDB();
+      showToast('1 unit dikonfirmasi. Sisa: '+sisa+'. Scan lagi untuk lanjut.','success');
+      renderStockTake();
+      setTimeout(function(){ scanStockPickup(reqId); },600); // lanjut scan otomatis untuk sisa unit
+    }
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+async function manualCompleteStockPickup(reqId){
+  try{
+    requirePerm('stock.approve');
+    const req = DB.STOCK_TAKEOUTS.find(t=>t.ID===reqId);
+    if(!req){ showToast('Permintaan tidak ditemukan.','error'); return; }
+    if(req.STATUS!=='DISETUJUI'){ showToast('Permintaan ini sudah tidak berstatus disetujui.','warning'); return; }
+    if(!confirm('Tandai '+req.ASSET_NAME+' sebagai sudah diambil tanpa scan satu-per-satu?')) return;
+    const sisa = Number(req.QTY) - Number(req.QTY_TAKEN||0);
+    const unitsToTake = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===req.ASSET_ID).slice(0,sisa);
+    const takenIds = unitsToTake.map(u=>u.ID);
+    DB.ASSET_UNITS = DB.ASSET_UNITS.filter(u=>!takenIds.includes(u.ID));
+    if(unitsToTake.length < sisa){
+      showToast('Perhatian: stok fisik tersedia ('+unitsToTake.length+') lebih sedikit dari sisa permintaan ('+sisa+').','warning');
+    }
+    req.QTY_TAKEN = Number(req.QTY_TAKEN||0) + unitsToTake.length;
+    req.STATUS = 'DIAMBIL';
+    req.TAKEN_AT = nowStr();
+    await audit('TAKE','STOCK',req.ID,'Pengambilan selesai (manual): '+req.ASSET_NAME+' x'+req.QTY);
+    await saveDB();
+    showToast('Barang ditandai selesai diambil.','success');
+    renderStockTake();
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+function renderStockHistory(){
+  const el = document.getElementById('stockHistory');
+  if(!el) return;
+  const rows = (DB.STOCK_TAKEOUTS||[]).slice(0,30);
+  el.innerHTML = renderTableHtml(rows,
+    [['ASSET_NAME','Barang'],['QTY','Jumlah'],['USER_NAME','Pemohon'],['STATUS','Status'],['APPROVED_BY','Diproses Oleh'],['CREATED_AT','Diajukan']],
+    function(){ return ''; });
 }
 
 /* =========================================================
