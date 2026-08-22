@@ -547,7 +547,6 @@ const MENUS = [
   {group:'Sarpras',code:'maintenance',name:'Maintenance',icon:'🔧',route:'maintenance',perm:'maintenance.view',setting:'ENABLE_MAINTENANCE'},
   {group:'Booking',code:'booking-room',name:'Booking Ruangan',icon:'🏢',route:'booking-room',perm:'booking.view',setting:'ENABLE_BOOKING'},
   {group:'Booking',code:'booking-asset',name:'Peminjaman Barang',icon:'📦',route:'booking-asset',perm:'booking.view',setting:'ENABLE_BOOKING'},
-  {group:'Booking',code:'booking-checkout',name:'Checkout Barang (Scan)',icon:'🔦',route:'booking-checkout',perm:'booking.checkout'},
   {group:'Booking',code:'stock-take',name:'Ambil Barang Habis Pakai',icon:'🧺',route:'stock-take',perm:'stock.view',setting:'ENABLE_STOCK'},
   {group:'Master Data',code:'master-units',name:'Unit / Fakultas',icon:'🏫',route:'master-units',perm:'setting.manage'},
   {group:'Master Data',code:'master-buildings',name:'Gedung',icon:'🏢',route:'master-buildings',perm:'room.manage'},
@@ -1002,7 +1001,6 @@ function navigate(route){
     'maintenance':renderMaintenance,
     'booking-room':()=>renderBookings('ROOM'),
     'booking-asset':()=>renderBookings('ASSET'),
-    'booking-checkout':renderCheckout,
     'stock-take':renderStockTake,
     'master-units':()=>renderGeneric('UNITS'),
     'master-buildings':()=>renderGeneric('BUILDINGS'),
@@ -1965,26 +1963,214 @@ async function processUnitImport(){
    BOOKINGS
 ========================================================= */
 function renderBookings(type){
-  STATE.bookingTab = type;
-  STATE.bookingStatusFilter = '';
-  STATE.assetCart = [];
-  const content = document.getElementById('content');
-  const canCreate = hasPermission(STATE.currentUser,'booking.create');
-  content.innerHTML = `
+  STATE.bookingTab=type;
+  STATE.bookingStatusFilter='';
+  STATE.assetCart=[];
+  const content=document.getElementById('content');
+  const canCreate=hasPermission(STATE.currentUser,'booking.create');
+
+  content.innerHTML=`
     <div class="page-title">${type==='ROOM'?'🏢 Booking Ruangan':'📦 Peminjaman Barang'}</div>
-    <div class="page-subtitle">${type==='ROOM'?'Permohonan pemakaian ruangan. Gratis untuk pengguna internal — biaya hanya berlaku untuk booking Tamu.':'Permohonan peminjaman barang — bisa memilih lebih dari satu barang sekaligus. Gratis untuk pengguna internal — biaya hanya berlaku untuk peminjaman Tamu.'}</div>
+    <div class="page-subtitle">${type==='ROOM'?'Permohonan pemakaian ruangan. Gratis untuk pengguna internal — biaya hanya berlaku untuk booking Tamu.':'Permohonan peminjaman barang — bisa memilih lebih dari satu barang sekaligus. Gunakan scanner untuk mengambil atau mengembalikan barang.'}</div>
     <div class="card">
       <div class="tabs" id="bookingStatusTabs"></div>
       <div class="toolbar">
-        <div class="toolbar-left"><input id="bookingSearch" class="search-box" placeholder="🔎 Cari booking..." oninput="renderBookingTable()"></div>
-        <div class="toolbar-right">${canCreate?`<button class="btn btn-primary" onclick="bookingForm('${type}')">+ Buat Booking</button>`:''}</div>
+        <div class="toolbar-left">
+          <input id="bookingSearch" class="search-box" placeholder="🔎 Cari booking..." oninput="renderBookingTable()">
+        </div>
+        <div class="toolbar-right">
+          ${canCreate?`<button class="btn btn-primary" onclick="bookingForm('${type}')">+ Buat Booking</button>`:''}
+        </div>
       </div>
       <div id="bookingTable"></div>
     </div>
+    ${type==='ASSET'?`
+      <div class="card">
+        <div class="card-title">🔦 Pengambilan / Pengembalian Barang</div>
+        <div class="hint" style="margin-bottom:12px">Scan nomor inventaris/barcode barang. <b>Barang tersedia</b> → scan untuk mengeluarkan barang. <b>Barang sedang dipinjam</b> → scan untuk mengembalikan barang.</div>
+        <div class="form-group">
+          <label>Nomor Inventaris / Barcode / QR</label>
+          <div style="display:flex;gap:8px">
+            <input id="co_BARCODE" style="flex:1" placeholder="Scan atau ketik nomor inventaris, lalu tekan Enter" autocomplete="off">
+            <button type="button" class="btn btn-primary" onclick="openQrScanner(function(text){processCheckoutScan(text);const input=document.getElementById('co_BARCODE');if(input){input.value='';input.focus();}})">📷 Scan Kamera</button>
+          </div>
+        </div>
+        <div id="co_result"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">📋 Riwayat Scan Terbaru</div>
+        <div id="co_history"></div>
+      </div>
+    `:''}
   `;
+
   renderBookingStatusTabs();
   renderBookingTable();
+
+  if(type==='ASSET'){
+    const input=document.getElementById('co_BARCODE');
+    if(input){
+      input.addEventListener('keydown',function(e){
+        if(e.key==='Enter'){
+          e.preventDefault();
+          const barcode=input.value.trim();
+          if(barcode){
+            processCheckoutScan(barcode);
+            input.value='';
+          }
+        }
+      });
+      input.focus();
+    }
+    renderCheckoutHistory();
+  }
 }
+
+function renderCheckoutHistory(){
+  const el=document.getElementById('co_history');
+  if(!el)return;
+  const rows=DB.AUDIT_LOG.filter(l=>l.MODULE==='CHECKOUT').slice(0,15);
+  el.innerHTML=renderTableHtml(rows,[['CREATED_AT','Waktu'],['USER_NAME','Petugas'],['DESCRIPTION','Keterangan']],function(){return '';});
+}
+
+async function processCheckoutScan(barcode){
+  try{
+    requirePerm('booking.checkout');
+    const resultEl=document.getElementById('co_result');
+    if(!barcode)return;
+
+    const unit=DB.ASSET_UNITS.find(u=>u.INVENTORY_NUMBER===barcode||u.ID===barcode);
+    if(!unit){
+      if(resultEl)resultEl.innerHTML=`<div class="error">Barcode "${escapeHtml(barcode)}" tidak ditemukan.</div>`;
+      showToast('Barcode tidak ditemukan.','error');
+      return;
+    }
+
+    const assetName=nameOf('ASSETS',unit.ASSET_ID);
+
+    if(String(unit.STATUS).toUpperCase()==='DIPINJAM'){
+      const booking=DB.BOOKINGS.find(b=>
+        b.TYPE==='ASSET'&&
+        ['DISETUJUI','DIAMBIL'].includes(b.STATUS)&&
+        (b.ITEMS||[]).some(i=>
+          i.ASSET_ID===unit.ASSET_ID&&
+          (i.ISSUED_UNIT_IDS||[]).includes(unit.ID)&&
+          !(i.RETURNED_UNIT_IDS||[]).includes(unit.ID)
+        )
+      );
+
+      if(!booking){
+        if(resultEl)resultEl.innerHTML=`<div class="error">Unit ini berstatus dipinjam tetapi tidak ditemukan booking aktif yang cocok. Silakan periksa manual di Unit Inventaris.</div>`;
+        showToast('Booking aktif tidak ditemukan.','warning');
+        return;
+      }
+
+      const item=(booking.ITEMS||[]).find(i=>i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).includes(unit.ID));
+      if(!item){
+        showToast('Item booking tidak ditemukan.','error');
+        return;
+      }
+
+      item.ISSUED_UNIT_IDS=item.ISSUED_UNIT_IDS||[];
+      item.RETURNED_UNIT_IDS=item.RETURNED_UNIT_IDS||[];
+
+      if(item.RETURNED_UNIT_IDS.includes(unit.ID)){
+        showToast('Unit ini sudah dikembalikan.','warning');
+        return;
+      }
+
+      item.RETURNED_UNIT_IDS.push(unit.ID);
+      unit.STATUS='TERSEDIA';
+
+      const allReturned=(booking.ITEMS||[]).every(i=>
+        (i.RETURNED_UNIT_IDS||[]).length>=Number(i.QTY||0)
+      );
+
+      if(allReturned)booking.STATUS='SELESAI';
+
+      await audit('RETURN','CHECKOUT',unit.ID,'Pengembalian '+assetName+' ('+unit.INVENTORY_NUMBER+') oleh '+booking.USER_NAME);
+      await saveDB();
+
+      if(resultEl){
+        resultEl.innerHTML=`
+          <div class="toast success" style="position:static">
+            ✅ Barang "<b>${escapeHtml(assetName)}</b>" (${escapeHtml(unit.INVENTORY_NUMBER)}) berhasil dikembalikan.
+            Peminjam: <b>${escapeHtml(booking.USER_NAME)}</b>
+          </div>
+        `;
+      }
+
+      showToast('Barang dikembalikan.','success');
+    }else{
+      const booking=DB.BOOKINGS.find(b=>
+        b.TYPE==='ASSET'&&
+        b.STATUS==='DISETUJUI'&&
+        (b.ITEMS||[]).some(i=>
+          i.ASSET_ID===unit.ASSET_ID&&
+          (i.ISSUED_UNIT_IDS||[]).length<Number(i.QTY||0)
+        )
+      );
+
+      if(!booking){
+        if(resultEl)resultEl.innerHTML=`<div class="error">Tidak ada booking yang disetujui (<b>DISETUJUI</b>) untuk barang "${escapeHtml(assetName)}".</div>`;
+        showToast('Tidak ada booking disetujui untuk barang ini.','warning');
+        return;
+      }
+
+      const item=(booking.ITEMS||[]).find(i=>
+        i.ASSET_ID===unit.ASSET_ID&&
+        (i.ISSUED_UNIT_IDS||[]).length<Number(i.QTY||0)
+      );
+
+      if(!item){
+        showToast('Item booking tidak ditemukan.','error');
+        return;
+      }
+
+      item.ISSUED_UNIT_IDS=item.ISSUED_UNIT_IDS||[];
+      item.RETURNED_UNIT_IDS=item.RETURNED_UNIT_IDS||[];
+
+      if(item.ISSUED_UNIT_IDS.includes(unit.ID)){
+        showToast('Unit ini sudah dikeluarkan.','warning');
+        return;
+      }
+
+      item.ISSUED_UNIT_IDS.push(unit.ID);
+      unit.STATUS='DIPINJAM';
+
+      const allIssued=(booking.ITEMS||[]).every(i=>
+        (i.ISSUED_UNIT_IDS||[]).length>=Number(i.QTY||0)
+      );
+
+      if(allIssued)booking.STATUS='DIAMBIL';
+
+      await audit('ISSUE','CHECKOUT',unit.ID,'Barang keluar '+assetName+' ('+unit.INVENTORY_NUMBER+') untuk '+booking.USER_NAME);
+      await saveDB();
+
+      if(resultEl){
+        resultEl.innerHTML=`
+          <div class="toast success" style="position:static">
+            📤 Barang "<b>${escapeHtml(assetName)}</b>" (${escapeHtml(unit.INVENTORY_NUMBER)}) berhasil dikeluarkan untuk <b>${escapeHtml(booking.USER_NAME)}</b>.
+          </div>
+        `;
+      }
+
+      showToast('Barang dikeluarkan.','success');
+    }
+
+    renderCheckoutHistory();
+    renderBookingTable();
+
+    const input=document.getElementById('co_BARCODE');
+    if(input){
+      input.value='';
+      input.focus();
+    }
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
+}
+
 function renderBookingStatusTabs(){
   const statuses = STATE.bookingTab==='ASSET'
     ? ['','MENUNGGU','DISETUJUI','DIAMBIL','SELESAI','DITOLAK','DIBATALKAN']
@@ -2463,99 +2649,6 @@ function showGuestSuccess(data){
     </div>
   `;
 }
-
-/* =========================================================
-   CHECKOUT / PENGEMBALIAN BARANG — SCAN BARCODE
-========================================================= */
-function renderCheckout(){
-  const content = document.getElementById('content');
-  content.innerHTML = `
-    <div class="page-title">🔦 Checkout Barang (Scan Barcode / QR)</div>
-    <div class="page-subtitle">Scan / masukkan nomor inventaris untuk mengeluarkan atau mengembalikan barang. Kompatibel dengan scanner barcode USB/Bluetooth (mode keyboard), atau gunakan kamera HP/laptop untuk scan QR code aset.</div>
-    <div class="card">
-      <div class="form-group">
-        <label>Nomor Inventaris / Barcode / QR</label>
-        <div style="display:flex;gap:8px">
-          <input id="co_BARCODE" style="flex:1" placeholder="Scan atau ketik nomor inventaris, lalu tekan Enter" autocomplete="off">
-          <button type="button" class="btn btn-primary" onclick="openQrScanner(function(text){ processCheckoutScan(text); document.getElementById('co_BARCODE').value=''; document.getElementById('co_BARCODE').focus(); })">📷 Scan Kamera</button>
-        </div>
-        <div class="hint">Barang tersedia → scan untuk <b>mengeluarkan</b> (perlu booking disetujui). Barang sedang dipinjam → scan lagi untuk <b>mengembalikan</b>.</div>
-      </div>
-      <div id="co_result"></div>
-    </div>
-    <div class="card">
-      <div class="card-title">Riwayat Scan Terbaru</div>
-      <div id="co_history"></div>
-    </div>
-  `;
-  const input = document.getElementById('co_BARCODE');
-  input.addEventListener('keydown', function(e){
-    if(e.key==='Enter'){ e.preventDefault(); processCheckoutScan(input.value.trim()); input.value=''; }
-  });
-  input.focus();
-  renderCheckoutHistory();
-}
-function renderCheckoutHistory(){
-  const el = document.getElementById('co_history');
-  if(!el) return;
-  const rows = DB.AUDIT_LOG.filter(l=>l.MODULE==='CHECKOUT').slice(0,15);
-  el.innerHTML = renderTableHtml(rows,[['CREATED_AT','Waktu'],['USER_NAME','Petugas'],['DESCRIPTION','Keterangan']],function(){ return ''; });
-}
-async function processCheckoutScan(barcode){
-  try{
-    requirePerm('booking.checkout');
-    const resultEl = document.getElementById('co_result');
-    if(!barcode){ return; }
-    const unit = DB.ASSET_UNITS.find(u=>u.INVENTORY_NUMBER===barcode || u.ID===barcode);
-    if(!unit){
-      resultEl.innerHTML = `<div class="error">Barcode "${escapeHtml(barcode)}" tidak ditemukan.</div>`;
-      showToast('Barcode tidak ditemukan.','error');
-      return;
-    }
-    const assetName = nameOf('ASSETS',unit.ASSET_ID);
-
-    if(String(unit.STATUS).toUpperCase()==='DIPINJAM'){
-      // RETURN flow
-      const booking = DB.BOOKINGS.find(b=>b.TYPE==='ASSET' && ['DISETUJUI','DIAMBIL'].includes(b.STATUS) &&
-        (b.ITEMS||[]).some(i=>i.ASSET_ID===unit.ASSET_ID && (i.ISSUED_UNIT_IDS||[]).includes(unit.ID) && !(i.RETURNED_UNIT_IDS||[]).includes(unit.ID)));
-      if(!booking){
-        resultEl.innerHTML = `<div class="error">Unit ini berstatus dipinjam tetapi tidak ditemukan booking aktif yang cocok. Silakan periksa manual di Unit Inventaris.</div>`;
-        return;
-      }
-      const item = booking.ITEMS.find(i=>i.ASSET_ID===unit.ASSET_ID);
-      item.RETURNED_UNIT_IDS.push(unit.ID);
-      unit.STATUS = 'TERSEDIA';
-      const allReturned = booking.ITEMS.every(i=>(i.RETURNED_UNIT_IDS||[]).length>=i.QTY);
-      if(allReturned) booking.STATUS = 'SELESAI';
-      await audit('RETURN','CHECKOUT',unit.ID,'Pengembalian '+assetName+' ('+unit.INVENTORY_NUMBER+') oleh '+booking.USER_NAME);
-      await saveDB();
-      resultEl.innerHTML = `<div class="toast success" style="position:static">✅ Barang "${escapeHtml(assetName)}" (${escapeHtml(unit.INVENTORY_NUMBER)}) berhasil dikembalikan. Peminjam: ${escapeHtml(booking.USER_NAME)}.</div>`;
-      showToast('Barang dikembalikan.','success');
-    }else{
-      // ISSUE / CHECKOUT flow
-      const booking = DB.BOOKINGS.find(b=>b.TYPE==='ASSET' && b.STATUS==='DISETUJUI' &&
-        (b.ITEMS||[]).some(i=>i.ASSET_ID===unit.ASSET_ID && (i.ISSUED_UNIT_IDS||[]).length < i.QTY));
-      if(!booking){
-        resultEl.innerHTML = `<div class="error">Tidak ada booking yang disetujui (DISETUJUI) untuk barang "${escapeHtml(assetName)}".</div>`;
-        showToast('Tidak ada booking disetujui untuk barang ini.','warning');
-        return;
-      }
-      const item = booking.ITEMS.find(i=>i.ASSET_ID===unit.ASSET_ID && (i.ISSUED_UNIT_IDS||[]).length < i.QTY);
-      item.ISSUED_UNIT_IDS.push(unit.ID);
-      unit.STATUS = 'DIPINJAM';
-      const allIssued = booking.ITEMS.every(i=>(i.ISSUED_UNIT_IDS||[]).length>=i.QTY);
-      if(allIssued) booking.STATUS = 'DIAMBIL';
-      await audit('ISSUE','CHECKOUT',unit.ID,'Barang keluar '+assetName+' ('+unit.INVENTORY_NUMBER+') untuk '+booking.USER_NAME);
-      await saveDB();
-      resultEl.innerHTML = `<div class="toast success" style="position:static">📤 Barang "${escapeHtml(assetName)}" (${escapeHtml(unit.INVENTORY_NUMBER)}) berhasil dikeluarkan untuk ${escapeHtml(booking.USER_NAME)}.</div>`;
-      showToast('Barang dikeluarkan.','success');
-    }
-    renderCheckoutHistory();
-  }catch(error){
-    showToast(getErrorMessage(error),'error');
-  }
-}
-
 /* =========================================================
    AMBIL BARANG — ASET HABIS PAKAI
    Alur: Ajukan (stock.take) -> Setujui/Tolak (stock.approve)
