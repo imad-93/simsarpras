@@ -2182,95 +2182,202 @@ function renderBookingStatusTabs(){
 }
 function setBookingFilter(s){ STATE.bookingStatusFilter = s; renderBookingStatusTabs(); renderBookingTable(); }
 function renderBookingTable(){
-  const type = STATE.bookingTab;
-  const keyword = (document.getElementById('bookingSearch')?.value||'').toLowerCase();
-  let rows = DB.BOOKINGS.filter(b=>b.TYPE===type);
-  if(STATE.bookingStatusFilter) rows = rows.filter(b=>b.STATUS===STATE.bookingStatusFilter);
-  if(keyword) rows = rows.filter(r=>Object.values(r).join(' ').toLowerCase().includes(keyword));
-  const canApprove = hasPermission(STATE.currentUser,'booking.approve');
-  const canCancel = hasPermission(STATE.currentUser,'booking.cancel');
-  document.getElementById('bookingTable').innerHTML = renderTableHtml(rows,
-    [['ITEM_NAME','Item'],['USER_NAME','Pemohon'],['IS_GUEST','Tipe'],['DATE','Tanggal'],['START_TIME','Mulai'],['END_TIME','Selesai'],['STATUS','Status'],['TOTAL_FEE','Total']],
+  const type=STATE.bookingTab;
+  const keyword=(document.getElementById('bookingSearch')?.value||'').toLowerCase();
+  let rows=DB.BOOKINGS.filter(b=>b.TYPE===type);
+
+  if(STATE.bookingStatusFilter)rows=rows.filter(b=>b.STATUS===STATE.bookingStatusFilter);
+  if(keyword)rows=rows.filter(r=>Object.values(r).join(' ').toLowerCase().includes(keyword));
+
+  const canApprove=hasPermission(STATE.currentUser,'booking.approve');
+  const canCancel=hasPermission(STATE.currentUser,'booking.cancel');
+
+  document.getElementById('bookingTable').innerHTML=renderTableHtml(
+    rows,
+    [
+      ['ITEM_NAME','Item'],
+      ['USER_NAME','Pemohon'],
+      ['IS_GUEST','Tipe'],
+      ['DATE','Tanggal Mulai'],
+      ['END_DATE','Tanggal Selesai'],
+      ['DURATION_DAYS','Hari'],
+      ['DURATION_HOURS','Jam'],
+      ['START_TIME','Mulai'],
+      ['END_TIME','Selesai'],
+      ['STATUS','Status'],
+      ['TOTAL_FEE','Total']
+    ],
     function(row){
       let html='';
-      const isOwner = STATE.currentUser.ID && STATE.currentUser.ID===row.USER_ID;
-      if(type==='ASSET') html += `<button class="btn btn-light btn-sm" onclick='assetBookingDetail(${safeJson(row)})'>🔍</button>`;
-      if(String(row.IS_GUEST).toUpperCase()==='TRUE' && row.GUEST_CONTACT){
-        html += `<button class="btn btn-light btn-sm" onclick="alert('Kontak tamu: ${escapeHtml(row.GUEST_CONTACT)}\\nInstansi/Keperluan: ${escapeHtml(row.GUEST_INSTANSI||'-')}')" title="Lihat kontak tamu">📞</button>`;
-      }
-      if(row.STATUS==='MENUNGGU' && canApprove){
-        html += `<button class="btn btn-success btn-sm" onclick="setBookingStatus('${row.ID}','DISETUJUI')">✅</button>
-          <button class="btn btn-danger btn-sm" onclick="setBookingStatus('${row.ID}','DITOLAK')">✖️</button>`;
-      }
-      if(['MENUNGGU','DISETUJUI'].includes(row.STATUS) && (canCancel || isOwner)){
-        html += `<button class="btn btn-light btn-sm" onclick="setBookingStatus('${row.ID}','DIBATALKAN')">Batal</button>`;
-      }
-      if(row.STATUS==='DISETUJUI' && type==='ROOM' && canApprove){
-        html += `<button class="btn btn-light btn-sm" onclick="setBookingStatus('${row.ID}','SELESAI')">Selesai</button>`;
-      }
-      if(!html) html = '<span style="color:#9AA3B5;font-size:11px">-</span>';
-      return html;
-    });
-}
+      const isOwner=STATE.currentUser.ID&&STATE.currentUser.ID===row.USER_ID;
 
+      if(type==='ASSET')html+=`<button class="btn btn-light btn-sm" onclick='assetBookingDetail(${safeJson(row)})'>🔍</button>`;
+
+      if(String(row.IS_GUEST).toUpperCase()==='TRUE'&&row.GUEST_CONTACT){
+        html+=`<button class="btn btn-light btn-sm" onclick="alert('Kontak tamu: ${escapeHtml(row.GUEST_CONTACT)}\\nInstansi/Keperluan: ${escapeHtml(row.GUEST_INSTANSI||'-')}')" title="Lihat kontak tamu">📞</button>`;
+      }
+
+      if(row.STATUS==='MENUNGGU'&&canApprove){
+        html+=`<button class="btn btn-success btn-sm" onclick="setBookingStatus('${row.ID}','DISETUJUI')">✅</button><button class="btn btn-danger btn-sm" onclick="setBookingStatus('${row.ID}','DITOLAK')">✖️</button>`;
+      }
+
+      if(['MENUNGGU','DISETUJUI'].includes(row.STATUS)&&(canCancel||isOwner)){
+        html+=`<button class="btn btn-light btn-sm" onclick="setBookingStatus('${row.ID}','DIBATALKAN')">Batal</button>`;
+      }
+
+      if(row.STATUS==='DISETUJUI'&&type==='ROOM'&&canApprove){
+        html+=`<button class="btn btn-light btn-sm" onclick="setBookingStatus('${row.ID}','SELESAI')">Selesai</button>`;
+      }
+
+      if(!html)html='<span style="color:#9AA3B5;font-size:11px">-</span>';
+      return html;
+    }
+  );
+}
 /* --- Room booking form (unchanged flow) --- */
 function bookingForm(type){
-  if(type==='ASSET'){ assetBookingForm(); return; }
-  openModal('Booking Ruangan', `
-    <div class="hint" style="margin-bottom:10px">🎓 Booking oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>. Biaya sewa & fasilitas tambahan hanya berlaku untuk booking oleh Tamu.</div>
+  if(type==='ASSET'){assetBookingForm();return;}
+  openModal('Booking Ruangan',`
+    <div class="hint" style="margin-bottom:10px">🎓 Booking oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>.</div>
     <div class="form-grid">
       <div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>
-      <div><label>Tanggal *</label><input id="b_DATE" type="date" min="${todayStr()}"></div>
-      <div></div>
+      <div><label>Tanggal Mulai *</label><input id="b_DATE" type="date" min="${todayStr()}"></div>
+      <div><label>Tanggal Selesai *</label><input id="b_END_DATE" type="date" min="${todayStr()}"></div>
       <div><label>Jam Mulai *</label><input id="b_START_TIME" type="time"></div>
       <div><label>Jam Selesai *</label><input id="b_END_TIME" type="time"></div>
+      <div><label>Satuan Durasi</label><select id="b_UNIT"><option value="HARI">Hari</option><option value="JAM">Jam</option></select></div>
+      <div class="form-full"><div id="b_duration_hint" class="hint"></div></div>
       <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="b_PURPOSE" placeholder="Contoh: Rapat koordinasi prodi"></textarea></div>
     </div>
-  `, [
+  `,[
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveBooking('ROOM')">📤 Ajukan</button>`
   ]);
+  setTimeout(function(){
+    ['b_DATE','b_END_DATE','b_START_TIME','b_END_TIME','b_UNIT'].forEach(function(id){
+      const el=document.getElementById(id);
+      if(el)el.addEventListener('change',updateInternalRoomDuration);
+    });
+    updateInternalRoomDuration();
+  },30);
+}
+function updateInternalRoomDuration(){
+  const hint=document.getElementById('b_duration_hint');
+  if(!hint)return;
+  const startDate=getValue('b_DATE');
+  const endDate=getValue('b_END_DATE');
+  const startTime=getValue('b_START_TIME');
+  const endTime=getValue('b_END_TIME');
+  const unit=getValue('b_UNIT')||'HARI';
+  if(!startDate||!endDate||!startTime||!endTime){
+    hint.textContent='';
+    return;
+  }
+  const start=new Date(startDate+'T'+startTime);
+  const end=new Date(endDate+'T'+endTime);
+  if(isNaN(start.getTime())||isNaN(end.getTime())||end<=start){
+    hint.innerHTML='<span style="color:#D93025">Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.</span>';
+    return;
+  }
+  const duration=calculateBookingDuration(startDate,endDate,startTime,endTime);
+  hint.innerHTML='Akumulasi: <b>'+duration.days+' hari</b> / <b>'+duration.hours+' jam</b> · Digunakan: <b>'+duration.qty+' '+(unit==='HARI'?'hari':'jam')+'</b> · Total biaya internal: <b>Rp0</b>';
 }
 async function saveBooking(type){
   try{
     requirePerm('booking.create');
-    const itemId = getValue('b_ITEM_ID'), date = getValue('b_DATE'), start = getValue('b_START_TIME'), end = getValue('b_END_TIME'), purpose = getValue('b_PURPOSE');
-    if(!itemId || !date || !start || !end || !purpose){ showToast('Semua field wajib diisi.','warning'); return; }
-    if(start>=end){ showToast('Jam selesai harus lebih besar dari jam mulai.','warning'); return; }
-    const room = DB.ROOMS.find(r=>r.ID===itemId);
-    if(!room){ showToast('Ruangan tidak ditemukan.','error'); return; }
-    const conflict = DB.BOOKINGS.some(b=>b.TYPE==='ROOM' && b.ITEM_ID===itemId && b.DATE===date &&
-      ['MENUNGGU','DISETUJUI'].includes(b.STATUS) && start<b.END_TIME && end>b.START_TIME);
-    if(conflict){ showToast('Ruangan sudah dibooking pada jadwal tersebut. Pilih jadwal lain.','warning'); return; }
+    if(type!=='ROOM')return;
+    const itemId=getValue('b_ITEM_ID');
+    const date=getValue('b_DATE');
+    const endDate=getValue('b_END_DATE');
+    const start=getValue('b_START_TIME');
+    const end=getValue('b_END_TIME');
+    const unit=getValue('b_UNIT')||'HARI';
+    const purpose=getValue('b_PURPOSE');
 
-    const data = {
-      ID:uid('BKG'), TYPE:'ROOM', ITEM_ID:itemId, ITEM_NAME:room.NAME,
-      USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME, IS_GUEST:'FALSE',
-      DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-      BASE_FEE:0, FACILITY_FEE:0, TOTAL_FEE:0,
+    if(!itemId||!date||!endDate||!start||!end||!purpose){
+      showToast('Semua field wajib diisi.','warning');
+      return;
+    }
+
+    const startDateTime=new Date(date+'T'+start);
+    const endDateTime=new Date(endDate+'T'+end);
+
+    if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
+      showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
+      return;
+    }
+
+    const room=DB.ROOMS.find(r=>r.ID===itemId);
+    if(!room){
+      showToast('Ruangan tidak ditemukan.','error');
+      return;
+    }
+
+    const conflict=DB.BOOKINGS.some(b=>{
+      if(b.TYPE!=='ROOM'||b.ITEM_ID!==itemId)return false;
+      if(!['MENUNGGU','DISETUJUI'].includes(b.STATUS))return false;
+      const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
+      const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
+      return startDateTime<bEnd&&endDateTime>bStart;
+    });
+
+    if(conflict){
+      showToast('Ruangan sudah dibooking pada jadwal tersebut. Pilih jadwal lain.','warning');
+      return;
+    }
+
+    const duration=calculateBookingDuration(date,endDate,start,end);
+
+    const data={
+      ID:uid('BKG'),
+      TYPE:'ROOM',
+      ITEM_ID:itemId,
+      ITEM_NAME:room.NAME,
+      USER_ID:STATE.currentUser.ID,
+      USER_NAME:STATE.currentUser.NAME,
+      IS_GUEST:'FALSE',
+      DATE:date,
+      END_DATE:endDate,
+      START_TIME:start,
+      END_TIME:end,
+      DURATION_DAYS:duration.days,
+      DURATION_HOURS:duration.hours,
+      RATE_UNIT:unit,
+      RATE:0,
+      PURPOSE:purpose,
+      BASE_FEE:0,
+      FACILITY_FEE:0,
+      TOTAL_FEE:0,
       FACILITY_LIST:'',
-      STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
+      STATUS:'MENUNGGU',
+      NOTE:'',
+      CREATED_AT:nowStr()
     };
+
     DB.BOOKINGS.push(data);
     await audit('CREATE','BOOKINGS',data.ID,'Booking ruangan baru: '+room.NAME);
     await saveDB();
     closeModal();
     showToast('Booking ruangan berhasil diajukan (gratis untuk pengguna internal).','success');
     renderBookings('ROOM');
-  }catch(error){ showToast(getErrorMessage(error),'error'); }
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
-
 /* --- Asset (barang) booking: multi-item cart --- */
 function assetBookingForm(){
-  STATE.assetCart = [];
-  const loanable = DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE');
-  openModal('Peminjaman Barang (Bisa Pilih Lebih dari 1)', `
-    <div class="hint" style="margin-bottom:10px">🎓 Peminjaman oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>. Biaya sewa hanya berlaku untuk peminjaman oleh Tamu.</div>
+  STATE.assetCart=[];
+  const loanable=DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE');
+
+  openModal('Peminjaman Barang (Bisa Pilih Lebih dari 1)',`
+    <div class="hint" style="margin-bottom:10px">🎓 Peminjaman oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>.</div>
     <div class="form-grid">
-      <div><label>Tanggal *</label><input id="ab_DATE" type="date" min="${todayStr()}"></div>
-      <div></div>
-      <div><label>Jam Mulai *</label><input id="ab_START_TIME" type="time"></div>
-      <div><label>Jam Selesai *</label><input id="ab_END_TIME" type="time"></div>
+      <div><label>Tanggal Mulai *</label><input id="ab_DATE" type="date" min="${todayStr()}" onchange="updateAssetBookingDuration()"></div>
+      <div><label>Tanggal Selesai *</label><input id="ab_END_DATE" type="date" min="${todayStr()}" onchange="updateAssetBookingDuration()"></div>
+      <div><label>Jam Mulai *</label><input id="ab_START_TIME" type="time" onchange="updateAssetBookingDuration()"></div>
+      <div><label>Jam Selesai *</label><input id="ab_END_TIME" type="time" onchange="updateAssetBookingDuration()"></div>
+      <div><label>Satuan Durasi</label><select id="ab_UNIT" onchange="updateAssetBookingDuration()"><option value="HARI">Hari</option><option value="JAM">Jam</option></select></div>
+      <div class="form-full"><div id="ab_duration_hint" class="hint"></div></div>
     </div>
     <div class="form-group" style="margin-top:10px">
       <label>Pilih Barang</label>
@@ -2283,16 +2390,43 @@ function assetBookingForm(){
     </div>
     <div id="ab_cart_list" style="margin:10px 0"></div>
     <div class="form-group"><label>Tujuan / Keperluan *</label><textarea id="ab_PURPOSE" placeholder="Contoh: Peminjaman untuk acara seminar"></textarea></div>
-  `, [
+  `,[
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveAssetBooking()">📤 Ajukan</button>`
   ]);
+
   setTimeout(function(){
-    const sel = document.getElementById('ab_ASSET_SELECT');
-    if(sel) sel.addEventListener('change', updateAssetStockHint);
+    const sel=document.getElementById('ab_ASSET_SELECT');
+    if(sel)sel.addEventListener('change',updateAssetStockHint);
     updateAssetStockHint();
+    updateAssetBookingDuration();
     renderAssetCart();
   },50);
+}
+function updateAssetBookingDuration(){
+  const hint=document.getElementById('ab_duration_hint');
+  if(!hint)return;
+  const startDate=getValue('ab_DATE');
+  const endDate=getValue('ab_END_DATE');
+  const startTime=getValue('ab_START_TIME');
+  const endTime=getValue('ab_END_TIME');
+  const unit=getValue('ab_UNIT')||'HARI';
+
+  if(!startDate||!endDate||!startTime||!endTime){
+    hint.textContent='';
+    return;
+  }
+
+  const start=new Date(startDate+'T'+startTime);
+  const end=new Date(endDate+'T'+endTime);
+
+  if(isNaN(start.getTime())||isNaN(end.getTime())||end<=start){
+    hint.innerHTML='<span style="color:#D93025">Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.</span>';
+    return;
+  }
+
+  const duration=calculateBookingDuration(startDate,endDate,startTime,endTime);
+  hint.innerHTML='Akumulasi: <b>'+duration.days+' hari</b> / <b>'+duration.hours+' jam</b> · Digunakan: <b>'+duration.qty+' '+(unit==='HARI'?'hari':'jam')+'</b> · Total biaya internal: <b>Rp0</b>';
 }
 function assetAvailableStock(assetId){
   return DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId).length;
@@ -2319,82 +2453,159 @@ function removeAssetFromCart(assetId){
   renderAssetCart();
 }
 function renderAssetCart(){
-  const el = document.getElementById('ab_cart_list');
-  if(!el) return;
+  const el=document.getElementById('ab_cart_list');
+  if(!el)return;
+
   if(!STATE.assetCart.length){
-    el.innerHTML = '<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>';
-  }else{
-    el.innerHTML = `<div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th></th></tr></thead><tbody>
-      ${STATE.assetCart.map(c=>`<tr>
-        <td>${escapeHtml(c.ASSET_NAME)}</td>
-        <td>${c.QTY}</td>
-        <td><button type="button" class="btn btn-danger btn-sm" onclick="removeAssetFromCart('${c.ASSET_ID}')">🗑️</button></td>
-      </tr>`).join('')}
-      </tbody></table></div>`;
+    el.innerHTML='<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>';
+    return;
   }
+
+  el.innerHTML=`
+    <div class="table-wrapper">
+      <table>
+        <thead><tr><th>Barang</th><th>Jumlah</th><th></th></tr></thead>
+        <tbody>
+          ${STATE.assetCart.map(c=>`
+            <tr>
+              <td>${escapeHtml(c.ASSET_NAME)}</td>
+              <td>${c.QTY}</td>
+              <td><button type="button" class="btn btn-danger btn-sm" onclick="removeAssetFromCart('${c.ASSET_ID}')">🗑️</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 async function saveAssetBooking(){
   try{
     requirePerm('booking.create');
-    const date = getValue('ab_DATE'), start = getValue('ab_START_TIME'), end = getValue('ab_END_TIME'), purpose = getValue('ab_PURPOSE');
-    if(!date || !start || !end || !purpose){ showToast('Tanggal, jam, dan keperluan wajib diisi.','warning'); return; }
-    if(start>=end){ showToast('Jam selesai harus lebih besar dari jam mulai.','warning'); return; }
-    if(!STATE.assetCart.length){ showToast('Pilih minimal 1 barang untuk dipinjam.','warning'); return; }
 
-    // check stock availability against overlapping active asset bookings
+    const date=getValue('ab_DATE');
+    const endDate=getValue('ab_END_DATE');
+    const start=getValue('ab_START_TIME');
+    const end=getValue('ab_END_TIME');
+    const unit=getValue('ab_UNIT')||'HARI';
+    const purpose=getValue('ab_PURPOSE');
+
+    if(!date||!endDate||!start||!end||!purpose){
+      showToast('Tanggal, jam, dan keperluan wajib diisi.','warning');
+      return;
+    }
+
+    const startDateTime=new Date(date+'T'+start);
+    const endDateTime=new Date(endDate+'T'+end);
+
+    if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
+      showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
+      return;
+    }
+
+    if(!STATE.assetCart.length){
+      showToast('Pilih minimal 1 barang untuk dipinjam.','warning');
+      return;
+    }
+
     for(const item of STATE.assetCart){
-      const totalStock = assetAvailableStock(item.ASSET_ID);
-      const reserved = DB.BOOKINGS.filter(b=>b.TYPE==='ASSET' && ['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS) && b.DATE===date)
-        .filter(b=> start < b.END_TIME && end > b.START_TIME)
+      const totalStock=assetAvailableStock(item.ASSET_ID);
+      const reserved=DB.BOOKINGS
+        .filter(b=>b.TYPE==='ASSET'&&['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS))
+        .filter(b=>{
+          const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
+          const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
+          return startDateTime<bEnd&&endDateTime>bStart;
+        })
         .reduce((sum,b)=>{
-          const found = (b.ITEMS||[]).find(i=>i.ASSET_ID===item.ASSET_ID);
-          return sum + (found ? found.QTY : 0);
+          const found=(b.ITEMS||[]).find(i=>i.ASSET_ID===item.ASSET_ID);
+          return sum+(found?Number(found.QTY)||0:0);
         },0);
-      if(reserved + item.QTY > totalStock){
+
+      if(reserved+item.QTY>totalStock){
         showToast('Stok "'+item.ASSET_NAME+'" tidak mencukupi pada jadwal tersebut. Tersedia: '+Math.max(totalStock-reserved,0)+'.','warning');
         return;
       }
     }
 
-    const items = STATE.assetCart.map(c=>({ASSET_ID:c.ASSET_ID,ASSET_NAME:c.ASSET_NAME,QTY:c.QTY,FEE_PER_UNIT:0,ISSUED_UNIT_IDS:[],RETURNED_UNIT_IDS:[]}));
-    const itemName = items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
+    const duration=calculateBookingDuration(date,endDate,start,end);
+    const items=STATE.assetCart.map(c=>({
+      ASSET_ID:c.ASSET_ID,
+      ASSET_NAME:c.ASSET_NAME,
+      QTY:c.QTY,
+      FEE_PER_UNIT:0,
+      ISSUED_UNIT_IDS:[],
+      RETURNED_UNIT_IDS:[]
+    }));
 
-    const data = {
-      ID:uid('BKG'), TYPE:'ASSET', ITEM_ID:'', ITEM_NAME:itemName,
-      USER_ID:STATE.currentUser.ID, USER_NAME:STATE.currentUser.NAME, IS_GUEST:'FALSE',
-      DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-      ITEMS: items,
-      BASE_FEE:0, FACILITY_FEE:0, TOTAL_FEE:0,
-      FACILITY_LIST: '',
-      STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
+    const itemName=items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
+
+    const data={
+      ID:uid('BKG'),
+      TYPE:'ASSET',
+      ITEM_ID:'',
+      ITEM_NAME:itemName,
+      USER_ID:STATE.currentUser.ID,
+      USER_NAME:STATE.currentUser.NAME,
+      IS_GUEST:'FALSE',
+      DATE:date,
+      END_DATE:endDate,
+      START_TIME:start,
+      END_TIME:end,
+      DURATION_DAYS:duration.days,
+      DURATION_HOURS:duration.hours,
+      RATE_UNIT:unit,
+      RATE:0,
+      PURPOSE:purpose,
+      ITEMS:items,
+      BASE_FEE:0,
+      FACILITY_FEE:0,
+      TOTAL_FEE:0,
+      FACILITY_LIST:'',
+      STATUS:'MENUNGGU',
+      NOTE:'',
+      CREATED_AT:nowStr()
     };
+
     DB.BOOKINGS.push(data);
     await audit('CREATE','BOOKINGS',data.ID,'Peminjaman barang baru: '+itemName);
     await saveDB();
     closeModal();
     showToast('Peminjaman barang berhasil diajukan (gratis untuk pengguna internal).','success');
     renderBookings('ASSET');
-  }catch(error){ showToast(getErrorMessage(error),'error'); }
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 function assetBookingDetail(row){
-  const items = row.ITEMS || [];
-  const rowsHtml = items.map(i=>{
-    const issued = (i.ISSUED_UNIT_IDS||[]).length;
-    const returned = (i.RETURNED_UNIT_IDS||[]).length;
+  const items=row.ITEMS||[];
+  const rowsHtml=items.map(i=>{
+    const issued=(i.ISSUED_UNIT_IDS||[]).length;
+    const returned=(i.RETURNED_UNIT_IDS||[]).length;
     return `<tr><td>${escapeHtml(i.ASSET_NAME)}</td><td>${i.QTY}</td><td>${issued}</td><td>${returned}</td></tr>`;
   }).join('');
-  openModal('Detail Peminjaman', `
+
+  openModal('Detail Peminjaman',`
     <div class="kv"><span>Status</span>${statusBadge(row.STATUS)}</div>
     <div class="kv"><span>Pemohon</span><b>${escapeHtml(row.USER_NAME)}</b></div>
-    <div class="kv"><span>Tanggal</span><b>${escapeHtml(row.DATE)} · ${escapeHtml(row.START_TIME)}–${escapeHtml(row.END_TIME)}</b></div>
+    <div class="kv"><span>Tanggal Mulai</span><b>${escapeHtml(row.DATE)}</b></div>
+    <div class="kv"><span>Tanggal Selesai</span><b>${escapeHtml(row.END_DATE||row.DATE)}</b></div>
+    <div class="kv"><span>Waktu</span><b>${escapeHtml(row.START_TIME)}–${escapeHtml(row.END_TIME)}</b></div>
+    <div class="kv"><span>Akumulasi Hari</span><b>${escapeHtml(String(row.DURATION_DAYS||0))} hari</b></div>
+    <div class="kv"><span>Akumulasi Jam</span><b>${escapeHtml(String(row.DURATION_HOURS||0))} jam</b></div>
+    <div class="kv"><span>Satuan Durasi</span><b>${row.RATE_UNIT==='JAM'?'Jam':'Hari'}</b></div>
     <div class="kv"><span>Keperluan</span><b>${escapeHtml(row.PURPOSE||'-')}</b></div>
     ${row.FACILITY_LIST?`<div class="kv"><span>Fasilitas tambahan</span><b>${escapeHtml(row.FACILITY_LIST)}</b></div>`:''}
-    <div class="kv"><span>Total biaya</span><b>${escapeHtml(formatCurrency(row.TOTAL_FEE))}</b></div>
-    <div style="margin-top:12px"><label>Daftar Barang</label>
-      <div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th>Sudah Diambil</th><th>Sudah Dikembalikan</th></tr></thead>
-      <tbody>${rowsHtml||'<tr><td colspan="4">Tidak ada item.</td></tr>'}</tbody></table></div>
+    <div class="kv"><span>Total biaya</span><b>${escapeHtml(formatCurrency(row.TOTAL_FEE||0))}</b></div>
+    <div style="margin-top:12px">
+      <label>Daftar Barang</label>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Barang</th><th>Jumlah</th><th>Sudah Diambil</th><th>Sudah Dikembalikan</th></tr></thead>
+          <tbody>${rowsHtml||'<tr><td colspan="4">Tidak ada item.</td></tr>'}</tbody>
+        </table>
+      </div>
     </div>
-  `, [`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);
+  `,[`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);
 }
 async function setBookingStatus(id,status){
   try{
@@ -2460,47 +2671,95 @@ function renderGuestBookingForm(){
   `;
   if(tab==='ROOM') renderGuestRoomForm(); else renderGuestAssetForm();
 }
+function calculateBookingDuration(startDate,endDate,startTime,endTime){
+  if(!startDate||!endDate)return{days:0,hours:0};
+  const start=new Date(startDate+'T'+(startTime||'00:00'));
+  const end=new Date(endDate+'T'+(endTime||'23:59'));
+  if(isNaN(start.getTime())||isNaN(end.getTime())||end<start)return{days:0,hours:0};
+  const diffMs=end-start;
+  const hours=Math.ceil(diffMs/(1000*60*60));
+  const days=Math.ceil(diffMs/(1000*60*60*24));
+  return{days:Math.max(days,1),hours:Math.max(hours,1)};
+}
+
+function calculateBookingFee(rate,unit,startDate,endDate,startTime,endTime){
+  const duration=calculateBookingDuration(startDate,endDate,startTime,endTime);
+  const qty=String(unit).toUpperCase()==='HARI'?duration.days:duration.hours;
+  return{days:duration.days,hours:duration.hours,qty:qty,total:(Number(rate)||0)*qty};
+}
 function renderGuestRoomForm(){
-  const body = document.getElementById('guestFormBody');
-  const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
-  body.innerHTML = `
+  const body=document.getElementById('guestFormBody');
+  const facAssets=DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
+  body.innerHTML=`
     <div class="form-grid">
       <div class="form-full"><label>Ruangan *</label><select id="gr_ITEM_ID" onchange="onGuestRoomChange()">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>
-      <div><label>Tanggal *</label><input id="gr_DATE" type="date" min="${todayStr()}"></div>
-      <div></div>
-      <div><label>Jam Mulai *</label><input id="gr_START_TIME" type="time"></div>
-      <div><label>Jam Selesai *</label><input id="gr_END_TIME" type="time"></div>
-      ${facAssets.length ? `<div class="form-full">
+      <div><label>Tanggal Mulai *</label><input id="gr_DATE" type="date" min="${todayStr()}" onchange="onGuestRoomChange()"></div>
+      <div><label>Tanggal Selesai *</label><input id="gr_END_DATE" type="date" min="${todayStr()}" onchange="onGuestRoomChange()"></div>
+      <div><label>Jam Mulai *</label><input id="gr_START_TIME" type="time" onchange="onGuestRoomChange()"></div>
+      <div><label>Jam Selesai *</label><input id="gr_END_TIME" type="time" onchange="onGuestRoomChange()"></div>
+      <div><label>Satuan Tarif *</label><select id="gr_UNIT" onchange="onGuestRoomChange()"><option value="HARI">Hari</option><option value="JAM">Jam</option></select></div>
+      <div><label>Tarif</label><input id="gr_RATE" type="number" min="0" value="0" readonly></div>
+      ${facAssets.length?`<div class="form-full">
         <label>Fasilitas Tambahan (biaya berlaku)</label>
         <div id="gr_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
           ${facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="gr_fac_chk" type="checkbox" data-fee="${a.FACILITY_FEE||0}" value="${a.ID}" onchange="onGuestRoomChange()"> ${escapeHtml(a.NAME)} (${escapeHtml(formatCurrency(a.FACILITY_FEE||0))})</label>`).join('')}
         </div>
-      </div>` : ''}
+      </div>`:''}
       <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="gr_PURPOSE" placeholder="Contoh: Rapat koordinasi"></textarea></div>
     </div>
     <div class="hint" id="gr_fee_hint" style="margin-top:6px"></div>
   `;
   setTimeout(onGuestRoomChange,30);
 }
+
 function onGuestRoomChange(){
-  const id = getValue('gr_ITEM_ID');
-  const room = DB.ROOMS.find(r=>r.ID===id);
-  const hint = document.getElementById('gr_fee_hint');
-  if(!hint) return;
-  const baseFee = room ? (Number(room.RENTAL_FEE)||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0) : 0;
-  const facTotal = Array.from(document.querySelectorAll('.gr_fac_chk:checked')).reduce((s,x)=>s+(Number(x.dataset.fee)||0),0);
-  hint.textContent = room ? ('Estimasi total biaya: '+formatCurrency(baseFee+facTotal)+' (sewa ruangan: '+formatCurrency(baseFee)+(facTotal?' + fasilitas: '+formatCurrency(facTotal):'')+')') : '';
+  const id=getValue('gr_ITEM_ID');
+  const room=DB.ROOMS.find(r=>r.ID===id);
+  const startDate=getValue('gr_DATE');
+  const endDate=getValue('gr_END_DATE');
+  const startTime=getValue('gr_START_TIME');
+  const endTime=getValue('gr_END_TIME');
+  const unit=getValue('gr_UNIT')||'HARI';
+  const hint=document.getElementById('gr_fee_hint');
+  const rateInput=document.getElementById('gr_RATE');
+
+  if(!hint)return;
+
+  const rate=room?(Number(room.RENTAL_FEE)||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0):0;
+  const duration=calculateBookingFee(rate,unit,startDate,endDate,startTime,endTime);
+  const facTotal=Array.from(document.querySelectorAll('.gr_fac_chk:checked')).reduce((s,x)=>s+(Number(x.dataset.fee)||0),0);
+
+  if(rateInput)rateInput.value=rate;
+
+  if(!room){
+    hint.textContent='';
+    return;
+  }
+
+  if(!startDate||!endDate||!startTime||!endTime){
+    hint.innerHTML='Tarif: <b>'+formatCurrency(rate)+'</b> per '+(unit==='HARI'?'hari':'jam');
+    return;
+  }
+
+  if(new Date(endDate+'T'+endTime)<new Date(startDate+'T'+startTime)){
+    hint.innerHTML='<span style="color:#D93025">Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.</span>';
+    return;
+  }
+
+  hint.innerHTML='Durasi: <b>'+duration.days+' hari</b> / <b>'+duration.hours+' jam</b> · Tarif: <b>'+formatCurrency(rate)+'</b> per '+(unit==='HARI'?'hari':'jam')+' · Sewa: <b>'+formatCurrency(duration.total)+'</b>'+(facTotal?' · Fasilitas: <b>'+formatCurrency(facTotal)+'</b>':'')+' · <b>Total: '+formatCurrency(duration.total+facTotal)+'</b>';
 }
 function renderGuestAssetForm(){
-  const body = document.getElementById('guestFormBody');
-  const loanable = DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE');
-  const facAssets = DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
-  body.innerHTML = `
+  const body=document.getElementById('guestFormBody');
+  const loanable=DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE');
+  const facAssets=DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
+
+  body.innerHTML=`
     <div class="form-grid">
-      <div><label>Tanggal *</label><input id="ga_DATE" type="date" min="${todayStr()}"></div>
-      <div></div>
-      <div><label>Jam Mulai *</label><input id="ga_START_TIME" type="time"></div>
-      <div><label>Jam Selesai *</label><input id="ga_END_TIME" type="time"></div>
+      <div><label>Tanggal Mulai *</label><input id="ga_DATE" type="date" min="${todayStr()}" onchange="renderGuestCart()"></div>
+      <div><label>Tanggal Selesai *</label><input id="ga_END_DATE" type="date" min="${todayStr()}" onchange="renderGuestCart()"></div>
+      <div><label>Jam Mulai *</label><input id="ga_START_TIME" type="time" onchange="renderGuestCart()"></div>
+      <div><label>Jam Selesai *</label><input id="ga_END_TIME" type="time" onchange="renderGuestCart()"></div>
+      <div><label>Satuan Tarif *</label><select id="ga_UNIT" onchange="renderGuestCart()"><option value="HARI">Hari</option><option value="JAM">Jam</option></select></div>
     </div>
     <div class="form-group" style="margin-top:10px">
       <label>Pilih Barang</label>
@@ -2511,14 +2770,15 @@ function renderGuestAssetForm(){
       </div>
     </div>
     <div id="ga_cart_list" style="margin:10px 0"></div>
-    ${facAssets.length ? `<div class="form-group">
+    ${facAssets.length?`<div class="form-group">
       <label>Fasilitas Tambahan (biaya berlaku)</label>
       <div id="ga_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
         ${facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="ga_fac_chk" type="checkbox" data-fee="${a.FACILITY_FEE||0}" value="${a.ID}" onchange="renderGuestCart()"> ${escapeHtml(a.NAME)} (${escapeHtml(formatCurrency(a.FACILITY_FEE||0))})</label>`).join('')}
       </div>
-    </div>` : ''}
+    </div>`:''}
     <div class="form-group"><label>Tujuan / Keperluan *</label><textarea id="ga_PURPOSE" placeholder="Contoh: Peminjaman untuk acara seminar"></textarea></div>
   `;
+
   renderGuestCart();
 }
 function addGuestAssetToCart(){
@@ -2536,101 +2796,273 @@ function removeGuestAssetFromCart(assetId){
   renderGuestCart();
 }
 function renderGuestCart(){
-  const el = document.getElementById('ga_cart_list');
-  if(!el) return;
-  const facTotal = Array.from(document.querySelectorAll('.ga_fac_chk:checked')).reduce((s,x)=>s+(Number(x.dataset.fee)||0),0);
+  const el=document.getElementById('ga_cart_list');
+  if(!el)return;
+
+  const startDate=getValue('ga_DATE');
+  const endDate=getValue('ga_END_DATE');
+  const startTime=getValue('ga_START_TIME');
+  const endTime=getValue('ga_END_TIME');
+  const unit=getValue('ga_UNIT')||'HARI';
+  const duration=calculateBookingDuration(startDate,endDate,startTime,endTime);
+  const facTotal=Array.from(document.querySelectorAll('.ga_fac_chk:checked')).reduce((s,x)=>s+(Number(x.dataset.fee)||0),0);
+
   if(!STATE.guestCart.length){
-    el.innerHTML = '<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>'+
-      (facTotal ? '<div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">Biaya fasilitas tambahan: <b>'+escapeHtml(formatCurrency(facTotal))+'</b></div>' : '');
+    el.innerHTML='<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>'+(facTotal?'<div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">Biaya fasilitas tambahan: <b>'+escapeHtml(formatCurrency(facTotal))+'</b></div>':'');
     return;
   }
-  const itemsTotal = STATE.guestCart.reduce((s,c)=>s+(c.QTY*c.FEE_PER_UNIT),0);
-  el.innerHTML = `<div class="table-wrapper"><table><thead><tr><th>Barang</th><th>Jumlah</th><th>Harga/Unit</th><th>Subtotal</th><th></th></tr></thead><tbody>
-    ${STATE.guestCart.map(c=>`<tr><td>${escapeHtml(c.ASSET_NAME)}</td><td>${c.QTY}</td>
-      <td>${escapeHtml(formatCurrency(c.FEE_PER_UNIT))}</td><td>${escapeHtml(formatCurrency(c.QTY*c.FEE_PER_UNIT))}</td>
-      <td><button type="button" class="btn btn-danger btn-sm" onclick="removeGuestAssetFromCart('${c.ASSET_ID}')">🗑️</button></td></tr>`).join('')}
-    </tbody></table></div>
-    <div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">Total estimasi biaya: <b>${escapeHtml(formatCurrency(itemsTotal+facTotal))}</b>${facTotal?' (termasuk fasilitas: '+escapeHtml(formatCurrency(facTotal))+')':''}</div>`;
+
+  const itemsSubtotal=STATE.guestCart.reduce((s,c)=>{
+    const durationQty=unit==='HARI'?duration.days:duration.hours;
+    return s+(c.QTY*c.FEE_PER_UNIT*durationQty);
+  },0);
+
+  el.innerHTML=`
+    <div class="table-wrapper">
+      <table>
+        <thead><tr><th>Barang</th><th>Jumlah</th><th>Tarif</th><th>Satuan</th><th>Durasi</th><th>Subtotal</th><th></th></tr></thead>
+        <tbody>
+          ${STATE.guestCart.map(c=>{
+            const durationQty=unit==='HARI'?duration.days:duration.hours;
+            const subtotal=c.QTY*c.FEE_PER_UNIT*durationQty;
+            return `<tr>
+              <td>${escapeHtml(c.ASSET_NAME)}</td>
+              <td>${c.QTY}</td>
+              <td>${escapeHtml(formatCurrency(c.FEE_PER_UNIT))}</td>
+              <td>${unit==='HARI'?'Hari':'Jam'}</td>
+              <td>${durationQty}</td>
+              <td>${escapeHtml(formatCurrency(subtotal))}</td>
+              <td><button type="button" class="btn btn-danger btn-sm" onclick="removeGuestAssetFromCart('${c.ASSET_ID}')">🗑️</button></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">
+      Durasi: <b>${duration.days} hari</b> / <b>${duration.hours} jam</b><br>
+      Total barang: <b>${escapeHtml(formatCurrency(itemsSubtotal))}</b>
+      ${facTotal?' · Fasilitas: <b>'+escapeHtml(formatCurrency(facTotal))+'</b>':''}
+      <br>Total estimasi biaya: <b>${escapeHtml(formatCurrency(itemsSubtotal+facTotal))}</b>
+    </div>
+  `;
 }
 async function submitGuestBooking(){
   try{
-    const name = (getValue('g_NAME')||'').trim();
-    const contact = (getValue('g_CONTACT')||'').trim();
-    const instansi = (getValue('g_INSTANSI')||'').trim();
-    if(!name || !contact){ showToast('Nama dan kontak wajib diisi.','warning'); return; }
-    const tab = STATE.guestTab;
+    const name=(getValue('g_NAME')||'').trim();
+    const contact=(getValue('g_CONTACT')||'').trim();
+    const instansi=(getValue('g_INSTANSI')||'').trim();
+
+    if(!name||!contact){
+      showToast('Nama dan kontak wajib diisi.','warning');
+      return;
+    }
+
+    const tab=STATE.guestTab;
 
     if(tab==='ROOM'){
-      const itemId = getValue('gr_ITEM_ID'), date = getValue('gr_DATE'), start = getValue('gr_START_TIME'), end = getValue('gr_END_TIME'), purpose = getValue('gr_PURPOSE');
-      if(!itemId || !date || !start || !end || !purpose){ showToast('Lengkapi semua data booking ruangan.','warning'); return; }
-      if(start>=end){ showToast('Jam selesai harus lebih besar dari jam mulai.','warning'); return; }
-      const room = DB.ROOMS.find(r=>r.ID===itemId);
-      if(!room){ showToast('Ruangan tidak ditemukan.','error'); return; }
-      const conflict = DB.BOOKINGS.some(b=>b.TYPE==='ROOM' && b.ITEM_ID===itemId && b.DATE===date &&
-        ['MENUNGGU','DISETUJUI'].includes(b.STATUS) && start<b.END_TIME && end>b.START_TIME);
-      if(conflict){ showToast('Ruangan sudah dibooking pada jadwal tersebut. Pilih jadwal lain.','warning'); return; }
+      const itemId=getValue('gr_ITEM_ID');
+      const date=getValue('gr_DATE');
+      const endDate=getValue('gr_END_DATE');
+      const start=getValue('gr_START_TIME');
+      const end=getValue('gr_END_TIME');
+      const unit=getValue('gr_UNIT')||'HARI';
+      const purpose=getValue('gr_PURPOSE');
 
-      const baseFee = Number(room.RENTAL_FEE)||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0;
-      const facilityChecks = Array.from(document.querySelectorAll('.gr_fac_chk:checked')).map(x=>x.value);
-      let facilityFeeSum=0, facilityList=[];
-      facilityChecks.forEach(function(id){
-        const a = DB.ASSETS.find(x=>x.ID===id);
-        if(a){ facilityFeeSum += Number(a.FACILITY_FEE)||0; facilityList.push(a.NAME); }
+      if(!itemId||!date||!endDate||!start||!end||!purpose){
+        showToast('Lengkapi semua data booking ruangan.','warning');
+        return;
+      }
+
+      const startDateTime=new Date(date+'T'+start);
+      const endDateTime=new Date(endDate+'T'+end);
+
+      if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
+        showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
+        return;
+      }
+
+      const room=DB.ROOMS.find(r=>r.ID===itemId);
+      if(!room){
+        showToast('Ruangan tidak ditemukan.','error');
+        return;
+      }
+
+      const conflict=DB.BOOKINGS.some(b=>{
+        if(b.TYPE!=='ROOM'||b.ITEM_ID!==itemId)return false;
+        if(!['MENUNGGU','DISETUJUI'].includes(b.STATUS))return false;
+
+        const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
+        const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
+
+        return startDateTime<bEnd&&endDateTime>bStart;
       });
-      const data = {
-        ID:uid('BKG'), TYPE:'ROOM', ITEM_ID:itemId, ITEM_NAME:room.NAME,
-        USER_ID:'', USER_NAME:name+' (Tamu)', IS_GUEST:'TRUE', GUEST_CONTACT:contact, GUEST_INSTANSI:instansi,
-        DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-        BASE_FEE:baseFee, FACILITY_FEE:facilityFeeSum, TOTAL_FEE:baseFee+facilityFeeSum, FACILITY_LIST:facilityList.join(', '),
-        STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
+
+      if(conflict){
+        showToast('Ruangan sudah dibooking pada jadwal tersebut. Pilih jadwal lain.','warning');
+        return;
+      }
+
+      const baseRate=Number(room.RENTAL_FEE)||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0;
+      const calculation=calculateBookingFee(baseRate,unit,date,endDate,start,end);
+      const facilityChecks=Array.from(document.querySelectorAll('.gr_fac_chk:checked')).map(x=>x.value);
+      let facilityFeeSum=0;
+      let facilityList=[];
+
+      facilityChecks.forEach(function(id){
+        const a=DB.ASSETS.find(x=>x.ID===id);
+        if(a){
+          facilityFeeSum+=Number(a.FACILITY_FEE)||0;
+          facilityList.push(a.NAME);
+        }
+      });
+
+      const data={
+        ID:uid('BKG'),
+        TYPE:'ROOM',
+        ITEM_ID:itemId,
+        ITEM_NAME:room.NAME,
+        USER_ID:'',
+        USER_NAME:name+' (Tamu)',
+        IS_GUEST:'TRUE',
+        GUEST_CONTACT:contact,
+        GUEST_INSTANSI:instansi,
+        DATE:date,
+        END_DATE:endDate,
+        START_TIME:start,
+        END_TIME:end,
+        DURATION_DAYS:calculation.days,
+        DURATION_HOURS:calculation.hours,
+        RATE_UNIT:unit,
+        RATE:baseRate,
+        PURPOSE:purpose,
+        BASE_FEE:calculation.total,
+        FACILITY_FEE:facilityFeeSum,
+        TOTAL_FEE:calculation.total+facilityFeeSum,
+        FACILITY_LIST:facilityList.join(', '),
+        STATUS:'MENUNGGU',
+        NOTE:'',
+        CREATED_AT:nowStr()
       };
+
       DB.BOOKINGS.push(data);
       await audit('CREATE','BOOKINGS',data.ID,'Booking ruangan (tamu): '+name+' - '+room.NAME);
       await saveDB();
       showGuestSuccess(data);
     }else{
-      const date = getValue('ga_DATE'), start = getValue('ga_START_TIME'), end = getValue('ga_END_TIME'), purpose = getValue('ga_PURPOSE');
-      if(!date || !start || !end || !purpose){ showToast('Lengkapi semua data peminjaman barang.','warning'); return; }
-      if(start>=end){ showToast('Jam selesai harus lebih besar dari jam mulai.','warning'); return; }
-      if(!STATE.guestCart.length){ showToast('Pilih minimal 1 barang untuk dipinjam.','warning'); return; }
+      const date=getValue('ga_DATE');
+      const endDate=getValue('ga_END_DATE');
+      const start=getValue('ga_START_TIME');
+      const end=getValue('ga_END_TIME');
+      const unit=getValue('ga_UNIT')||'HARI';
+      const purpose=getValue('ga_PURPOSE');
+
+      if(!date||!endDate||!start||!end||!purpose){
+        showToast('Lengkapi semua data peminjaman barang.','warning');
+        return;
+      }
+
+      const startDateTime=new Date(date+'T'+start);
+      const endDateTime=new Date(endDate+'T'+end);
+
+      if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
+        showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
+        return;
+      }
+
+      if(!STATE.guestCart.length){
+        showToast('Pilih minimal 1 barang untuk dipinjam.','warning');
+        return;
+      }
+
+      const duration=calculateBookingDuration(date,endDate,start,end);
 
       for(const item of STATE.guestCart){
-        const totalStock = assetAvailableStock(item.ASSET_ID);
-        const reserved = DB.BOOKINGS.filter(b=>b.TYPE==='ASSET' && ['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS) && b.DATE===date)
-          .filter(b=> start < b.END_TIME && end > b.START_TIME)
-          .reduce((sum,b)=>{ const found=(b.ITEMS||[]).find(i=>i.ASSET_ID===item.ASSET_ID); return sum+(found?found.QTY:0); },0);
+        const totalStock=assetAvailableStock(item.ASSET_ID);
+        const reserved=DB.BOOKINGS.filter(b=>b.TYPE==='ASSET'&&['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS))
+          .filter(b=>{
+            const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
+            const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
+            return startDateTime<bEnd&&endDateTime>bStart;
+          })
+          .reduce((sum,b)=>{
+            const found=(b.ITEMS||[]).find(i=>i.ASSET_ID===item.ASSET_ID);
+            return sum+(found?Number(found.QTY)||0:0);
+          },0);
+
         if(reserved+item.QTY>totalStock){
           showToast('Stok "'+item.ASSET_NAME+'" tidak mencukupi pada jadwal tersebut. Tersedia: '+Math.max(totalStock-reserved,0)+'.','warning');
           return;
         }
       }
 
-      const items = STATE.guestCart.map(c=>({ASSET_ID:c.ASSET_ID,ASSET_NAME:c.ASSET_NAME,QTY:c.QTY,FEE_PER_UNIT:c.FEE_PER_UNIT,ISSUED_UNIT_IDS:[],RETURNED_UNIT_IDS:[]}));
-      const itemsSubtotal = items.reduce((s,i)=>s+(i.QTY*i.FEE_PER_UNIT),0);
-      const itemName = items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
-      const facilityChecks = Array.from(document.querySelectorAll('.ga_fac_chk:checked')).map(x=>x.value);
-      let facilityFeeSum=0, facilityList=[];
+      const items=STATE.guestCart.map(c=>({
+        ASSET_ID:c.ASSET_ID,
+        ASSET_NAME:c.ASSET_NAME,
+        QTY:c.QTY,
+        FEE_PER_UNIT:c.FEE_PER_UNIT,
+        ISSUED_UNIT_IDS:[],
+        RETURNED_UNIT_IDS:[]
+      }));
+
+      const durationQty=unit==='HARI'?duration.days:duration.hours;
+      const itemsSubtotal=items.reduce((s,i)=>s+(i.QTY*i.FEE_PER_UNIT*durationQty),0);
+      const itemName=items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
+      const facilityChecks=Array.from(document.querySelectorAll('.ga_fac_chk:checked')).map(x=>x.value);
+      let facilityFeeSum=0;
+      let facilityList=[];
+
       facilityChecks.forEach(function(id){
-        const a = DB.ASSETS.find(x=>x.ID===id);
-        if(a){ facilityFeeSum += Number(a.FACILITY_FEE)||0; facilityList.push(a.NAME); }
+        const a=DB.ASSETS.find(x=>x.ID===id);
+        if(a){
+          facilityFeeSum+=Number(a.FACILITY_FEE)||0;
+          facilityList.push(a.NAME);
+        }
       });
-      const data = {
-        ID:uid('BKG'), TYPE:'ASSET', ITEM_ID:'', ITEM_NAME:itemName,
-        USER_ID:'', USER_NAME:name+' (Tamu)', IS_GUEST:'TRUE', GUEST_CONTACT:contact, GUEST_INSTANSI:instansi,
-        DATE:date, START_TIME:start, END_TIME:end, PURPOSE:purpose,
-        ITEMS:items, BASE_FEE:itemsSubtotal, FACILITY_FEE:facilityFeeSum, TOTAL_FEE:itemsSubtotal+facilityFeeSum, FACILITY_LIST:facilityList.join(', '),
-        STATUS:'MENUNGGU', NOTE:'', CREATED_AT:nowStr()
+
+      const data={
+        ID:uid('BKG'),
+        TYPE:'ASSET',
+        ITEM_ID:'',
+        ITEM_NAME:itemName,
+        USER_ID:'',
+        USER_NAME:name+' (Tamu)',
+        IS_GUEST:'TRUE',
+        GUEST_CONTACT:contact,
+        GUEST_INSTANSI:instansi,
+        DATE:date,
+        END_DATE:endDate,
+        START_TIME:start,
+        END_TIME:end,
+        DURATION_DAYS:duration.days,
+        DURATION_HOURS:duration.hours,
+        RATE_UNIT:unit,
+        RATE:0,
+        PURPOSE:purpose,
+        ITEMS:items,
+        BASE_FEE:itemsSubtotal,
+        FACILITY_FEE:facilityFeeSum,
+        TOTAL_FEE:itemsSubtotal+facilityFeeSum,
+        FACILITY_LIST:facilityList.join(', '),
+        STATUS:'MENUNGGU',
+        NOTE:'',
+        CREATED_AT:nowStr()
       };
+
       DB.BOOKINGS.push(data);
       await audit('CREATE','BOOKINGS',data.ID,'Peminjaman barang (tamu): '+name+' - '+itemName);
       await saveDB();
       showGuestSuccess(data);
     }
-  }catch(error){ showToast(getErrorMessage(error),'error'); }
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 function showGuestSuccess(data){
-  const el = document.getElementById('guestContent');
-  el.innerHTML = `
+  const el=document.getElementById('guestContent');
+  const durationText=(data.DURATION_DAYS||0)+' hari / '+(data.DURATION_HOURS||0)+' jam';
+  const unitText=data.RATE_UNIT==='HARI'?'Hari':'Jam';
+
+  el.innerHTML=`
     <div style="text-align:center;padding:20px 10px">
       <div style="font-size:44px">✅</div>
       <div style="font-weight:800;font-size:16px;margin-top:8px">Pengajuan Berhasil Dikirim</div>
@@ -2638,8 +3070,11 @@ function showGuestSuccess(data){
       <div style="margin-top:14px;background:#F5F6FB;border:1px dashed #C7CCE0;border-radius:11px;padding:14px;font-weight:800;font-size:15px;letter-spacing:.5px">${escapeHtml(data.ID)}</div>
       <div style="margin-top:14px;text-align:left">
         <div class="kv"><span>Item</span><b>${escapeHtml(data.ITEM_NAME)}</b></div>
-        <div class="kv"><span>Tanggal</span><b>${escapeHtml(data.DATE)}, ${escapeHtml(data.START_TIME)}–${escapeHtml(data.END_TIME)}</b></div>
-        <div class="kv"><span>Total Estimasi Biaya</span><b>${escapeHtml(formatCurrency(data.TOTAL_FEE||0))}</b></div>
+        <div class="kv"><span>Tanggal</span><b>${escapeHtml(data.DATE)} s/d ${escapeHtml(data.END_DATE||data.DATE)}</b></div>
+        <div class="kv"><span>Waktu</span><b>${escapeHtml(data.START_TIME)}–${escapeHtml(data.END_TIME)}</b></div>
+        <div class="kv"><span>Akumulasi</span><b>${escapeHtml(durationText)}</b></div>
+        <div class="kv"><span>Satuan Tarif</span><b>${escapeHtml(unitText)}</b></div>
+        <div class="kv"><span>Total Biaya</span><b>${escapeHtml(formatCurrency(data.TOTAL_FEE||0))}</b></div>
         <div class="kv"><span>Status</span><b>Menunggu Persetujuan</b></div>
       </div>
       <div style="display:flex;gap:8px;margin-top:18px">
