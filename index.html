@@ -2470,30 +2470,142 @@ function renderBookingTable(){
 }
 /* --- Room booking form (unchanged flow) --- */
 function bookingForm(type){
-  if(type==='ASSET'){assetBookingForm();return;}
+  if(type==='ASSET'){
+    assetBookingForm();
+    return;
+  }
+  const bookableRooms=DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'&&String(r.CAN_BOOK||'TRUE').toUpperCase()!=='FALSE');
   openModal('Booking Ruangan',`
     <div class="hint" style="margin-bottom:10px">🎓 Booking oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>.</div>
     <div class="form-grid">
-      <div class="form-full"><label>Ruangan *</label><select id="b_ITEM_ID">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>
-      <div><label>Tanggal Mulai *</label><input id="b_DATE" type="date" min="${todayStr()}"></div>
-      <div><label>Tanggal Selesai *</label><input id="b_END_DATE" type="date" min="${todayStr()}"></div>
-      <div><label>Jam Mulai *</label><input id="b_START_TIME" type="time"></div>
-      <div><label>Jam Selesai *</label><input id="b_END_TIME" type="time"></div>
-      <div><label>Satuan Durasi</label><select id="b_UNIT"><option value="HARI">Hari</option><option value="JAM">Jam</option></select></div>
-      <div class="form-full"><div id="b_duration_hint" class="hint"></div></div>
-      <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="b_PURPOSE" placeholder="Contoh: Rapat koordinasi prodi"></textarea></div>
+      <div class="form-full">
+        <label>Ruangan *</label>
+        <select id="b_ITEM_ID">${selectOptions(bookableRooms,'ID','NAME',null,true)}</select>
+      </div>
+      <div>
+        <label>Tanggal *</label>
+        <input id="b_DATE" type="date" min="${todayStr()}">
+      </div>
+      <div></div>
+      <div>
+        <label>Jam Mulai *</label>
+        <input id="b_START_TIME" type="time">
+      </div>
+      <div>
+        <label>Jam Selesai *</label>
+        <input id="b_END_TIME" type="time">
+      </div>
+      <div class="form-full">
+        <label>Tujuan / Keperluan *</label>
+        <textarea id="b_PURPOSE" placeholder="Contoh: Rapat koordinasi prodi"></textarea>
+      </div>
     </div>
+    ${!bookableRooms.length?'<div class="error" style="margin-top:10px">Tidak ada ruangan yang dapat dibooking saat ini.</div>':''}
   `,[
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
-    `<button class="btn btn-primary" onclick="saveBooking('ROOM')">📤 Ajukan</button>`
+    `<button class="btn btn-primary" onclick="saveBooking('ROOM')" ${!bookableRooms.length?'disabled':''}>📤 Ajukan</button>`
   ]);
-  setTimeout(function(){
-    ['b_DATE','b_END_DATE','b_START_TIME','b_END_TIME','b_UNIT'].forEach(function(id){
-      const el=document.getElementById(id);
-      if(el)el.addEventListener('change',updateInternalRoomDuration);
+}
+
+async function saveBooking(type){
+  try{
+    requirePerm('booking.create');
+    if(type==='ASSET'){
+      return;
+    }
+    const itemId=getValue('b_ITEM_ID');
+    const date=getValue('b_DATE');
+    const start=getValue('b_START_TIME');
+    const end=getValue('b_END_TIME');
+    const purpose=getValue('b_PURPOSE');
+
+    if(!itemId||!date||!start||!end||!purpose){
+      showToast('Semua field wajib diisi.','warning');
+      return;
+    }
+
+    if(start>=end){
+      showToast('Jam selesai harus lebih besar dari jam mulai.','warning');
+      return;
+    }
+
+    const room=DB.ROOMS.find(r=>r.ID===itemId);
+
+    if(!room){
+      showToast('Ruangan tidak ditemukan.','error');
+      return;
+    }
+
+    if(String(room.CAN_BOOK||'TRUE').toUpperCase()==='FALSE'){
+      showToast('Ruangan ini tidak dapat dibooking. Silakan pilih ruangan lain.','warning');
+      closeModal();
+      return;
+    }
+
+    if(String(room.STATUS||'').toUpperCase()!=='TERSEDIA'){
+      showToast('Ruangan ini sedang tidak tersedia untuk booking. Silakan pilih ruangan lain.','warning');
+      closeModal();
+      return;
+    }
+
+    const startDateTime=new Date(date+'T'+start);
+    const endDateTime=new Date(date+'T'+end);
+
+    if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
+      showToast('Tanggal atau waktu booking tidak valid.','warning');
+      return;
+    }
+
+    const conflict=DB.BOOKINGS.some(b=>{
+      if(b.TYPE!=='ROOM'||b.ITEM_ID!==itemId)return false;
+      if(!['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS))return false;
+
+      const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
+      const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
+
+      return startDateTime<bEnd&&endDateTime>bStart;
     });
-    updateInternalRoomDuration();
-  },30);
+
+    if(conflict){
+      showToast('Ruangan sudah dibooking pada jadwal tersebut. Pilih jadwal lain.','warning');
+      return;
+    }
+
+    const data={
+      ID:uid('BKG'),
+      TYPE:'ROOM',
+      ITEM_ID:itemId,
+      ITEM_NAME:room.NAME,
+      USER_ID:STATE.currentUser.ID,
+      USER_NAME:STATE.currentUser.NAME,
+      IS_GUEST:'FALSE',
+      DATE:date,
+      END_DATE:date,
+      START_TIME:start,
+      END_TIME:end,
+      DURATION_DAYS:1,
+      DURATION_HOURS:Math.max(1,Math.ceil((endDateTime-startDateTime)/3600000)),
+      RATE_UNIT:'HARI',
+      RATE:0,
+      PURPOSE:purpose,
+      BASE_FEE:0,
+      FACILITY_FEE:0,
+      TOTAL_FEE:0,
+      FACILITY_LIST:'',
+      STATUS:'MENUNGGU',
+      NOTE:'',
+      CREATED_AT:nowStr()
+    };
+
+    DB.BOOKINGS.push(data);
+    await audit('CREATE','BOOKINGS',data.ID,'Booking ruangan baru: '+room.NAME);
+    await saveDB();
+    closeModal();
+    showToast('Booking ruangan berhasil diajukan (gratis untuk pengguna internal).','success');
+    renderBookings('ROOM');
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 function updateInternalRoomDuration(){
   const hint=document.getElementById('b_duration_hint');
@@ -2516,88 +2628,7 @@ function updateInternalRoomDuration(){
   const duration=calculateBookingDuration(startDate,endDate,startTime,endTime);
   hint.innerHTML='Akumulasi: <b>'+duration.days+' hari</b> / <b>'+duration.hours+' jam</b> · Digunakan: <b>'+duration.qty+' '+(unit==='HARI'?'hari':'jam')+'</b> · Total biaya internal: <b>Rp0</b>';
 }
-async function saveBooking(type){
-  try{
-    requirePerm('booking.create');
-    if(type!=='ROOM')return;
-    const itemId=getValue('b_ITEM_ID');
-    const date=getValue('b_DATE');
-    const endDate=getValue('b_END_DATE');
-    const start=getValue('b_START_TIME');
-    const end=getValue('b_END_TIME');
-    const unit=getValue('b_UNIT')||'HARI';
-    const purpose=getValue('b_PURPOSE');
 
-    if(!itemId||!date||!endDate||!start||!end||!purpose){
-      showToast('Semua field wajib diisi.','warning');
-      return;
-    }
-
-    const startDateTime=new Date(date+'T'+start);
-    const endDateTime=new Date(endDate+'T'+end);
-
-    if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
-      showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
-      return;
-    }
-
-    const room=DB.ROOMS.find(r=>r.ID===itemId);
-    if(!room){
-      showToast('Ruangan tidak ditemukan.','error');
-      return;
-    }
-
-    const conflict=DB.BOOKINGS.some(b=>{
-      if(b.TYPE!=='ROOM'||b.ITEM_ID!==itemId)return false;
-      if(!['MENUNGGU','DISETUJUI'].includes(b.STATUS))return false;
-      const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
-      const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
-      return startDateTime<bEnd&&endDateTime>bStart;
-    });
-
-    if(conflict){
-      showToast('Ruangan sudah dibooking pada jadwal tersebut. Pilih jadwal lain.','warning');
-      return;
-    }
-
-    const duration=calculateBookingDuration(date,endDate,start,end);
-
-    const data={
-      ID:uid('BKG'),
-      TYPE:'ROOM',
-      ITEM_ID:itemId,
-      ITEM_NAME:room.NAME,
-      USER_ID:STATE.currentUser.ID,
-      USER_NAME:STATE.currentUser.NAME,
-      IS_GUEST:'FALSE',
-      DATE:date,
-      END_DATE:endDate,
-      START_TIME:start,
-      END_TIME:end,
-      DURATION_DAYS:duration.days,
-      DURATION_HOURS:duration.hours,
-      RATE_UNIT:unit,
-      RATE:0,
-      PURPOSE:purpose,
-      BASE_FEE:0,
-      FACILITY_FEE:0,
-      TOTAL_FEE:0,
-      FACILITY_LIST:'',
-      STATUS:'MENUNGGU',
-      NOTE:'',
-      CREATED_AT:nowStr()
-    };
-
-    DB.BOOKINGS.push(data);
-    await audit('CREATE','BOOKINGS',data.ID,'Booking ruangan baru: '+room.NAME);
-    await saveDB();
-    closeModal();
-    showToast('Booking ruangan berhasil diajukan (gratis untuk pengguna internal).','success');
-    renderBookings('ROOM');
-  }catch(error){
-    showToast(getErrorMessage(error),'error');
-  }
-}
 /* --- Asset (barang) booking: multi-item cart --- */
 function assetBookingForm(){
   STATE.assetCart=[];
