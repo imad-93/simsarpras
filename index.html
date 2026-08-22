@@ -215,7 +215,7 @@ tbody tr:hover{background:#FAFBFE}
 <div id="loginPage" class="login-page">
   <div class="login-card">
     <div class="logo">🏢</div>
-    <div class="login-title">SIM-SARPRAS</div>
+    <div class="login-title">SIM-SARPRAS UAS</div>
     <div class="login-subtitle">Sistem Informasi Manajemen Sarana &amp; Prasarana — aset, ruangan, booking, laporan kerusakan, dan maintenance dalam satu tempat.</div>
     <div id="loginError" class="error hidden"></div>
     <form id="loginForm">
@@ -230,14 +230,7 @@ tbody tr:hover{background:#FAFBFE}
       <button id="loginButton" class="btn btn-primary btn-block" type="submit">🔐 Masuk</button>
     </form>
     <button type="button" class="btn btn-light btn-block" style="margin-top:10px" onclick="showGuestBooking()">🎫 Booking Tamu (Tanpa Login)</button>
-    <div class="demo-box">
-      <b>Akun demo</b><br>
-      admin / admin123 (Administrator)<br>
-      pengelola / pengelola123 (Pengelola Sarpras)<br>
-      teknisi / teknisi123 (Pelaksana)<br>
-      dosen / dosen123 (Dosen)
-    </div>
-    <div class="login-footer" id="storageFooter">SIM-SARPRAS · data tersimpan otomatis di perangkat ini</div>
+    <div class="login-footer" id="storageFooter">SIM-SARPRAS UAS KENCONG Copyright@2026</div>
   </div>
 </div>
 
@@ -595,7 +588,7 @@ function TABLE_CONFIGS(){
 
     ROOMS:{
       title:'Ruangan', icon:'🚪', permManage:'room.manage',
-      columns:[['CODE','Kode'],['NAME','Nama'],['BUILDING_ID','Gedung'],['FLOOR','Lantai'],['CAPACITY','Kapasitas'],['RENTAL_FEE','Tarif'],['RENTAL_UNIT','Satuan'],['STATUS','Status']],
+      columns:[['CODE','Kode'],['NAME','Nama'],['BUILDING_ID','Gedung'],['FLOOR','Lantai'],['CAPACITY','Kapasitas'],['RENTAL_FEE','Tarif'],['RENTAL_UNIT','Satuan'],['CAN_BOOK','Booking'],['STATUS','Status']],
       fields:[
         {key:'CODE',label:'Kode Ruangan',required:true},
         {key:'NAME',label:'Nama Ruangan',required:true},
@@ -604,6 +597,7 @@ function TABLE_CONFIGS(){
         {key:'CAPACITY',label:'Kapasitas (orang)',type:'number'},
         {key:'RENTAL_FEE',label:'Tarif Sewa (Rp/pemakaian)',type:'number'},
         {key:'RENTAL_UNIT',label:'Satuan Tarif',type:'select',options:[['HARI','Per Hari'],['JAM','Per Jam']],default:'HARI'},
+        {key:'CAN_BOOK',label:'Bisa Dibooking',type:'select',options:[['TRUE','Bisa Dibooking'],['FALSE','Tidak Bisa Dibooking']],default:'TRUE'},
         {key:'FACILITIES',label:'Fasilitas',full:true,placeholder:'AC, Proyektor, Sound system, ...'},
         {key:'STATUS',label:'Status',type:'select',options:[['TERSEDIA','Tersedia'],['MAINTENANCE','Maintenance'],['NONAKTIF','Nonaktif']],default:'TERSEDIA'},
         {key:'DESCRIPTION',label:'Deskripsi',type:'textarea',full:true}
@@ -1414,6 +1408,7 @@ function downloadRoomTemplate(){
     'Kapasitas':40,
     'Tarif Sewa':0,
     'Satuan Tarif (HARI/JAM)':'HARI',
+    'Bisa Dibooking (YA/TIDAK)':'YA',
     'Fasilitas':'AC, Proyektor',
     'Status (TERSEDIA/MAINTENANCE/NONAKTIF)':'TERSEDIA',
     'Deskripsi':''
@@ -1496,7 +1491,8 @@ async function processRoomImport(){
       const rentalFee=Number(r['Tarif Sewa'])||0;
       const rentalUnitRaw=String(r['Satuan Tarif (HARI/JAM)']||'HARI').trim().toUpperCase();
       const rentalUnit=rentalUnitRaw==='JAM'?'JAM':'HARI';
-
+      const canBookRaw=String(r['Bisa Dibooking (YA/TIDAK)']||'YA').trim().toUpperCase();
+      const canBook=['TIDAK','NO','FALSE','N'].includes(canBookRaw)?'FALSE':'TRUE';
       if(rentalUnitRaw&&!['HARI','JAM'].includes(rentalUnitRaw)){
         notes.push('Baris '+(idx+2)+': satuan tarif tidak valid, digunakan HARI.');
       }
@@ -1518,6 +1514,7 @@ async function processRoomImport(){
         CAPACITY:r['Kapasitas']||'',
         RENTAL_FEE:rentalFee,
         RENTAL_UNIT:rentalUnit,
+        CAN_BOOK:canBook,
         FACILITIES:String(r['Fasilitas']||''),
         STATUS:status,
         DESCRIPTION:String(r['Deskripsi']||''),
@@ -2927,12 +2924,13 @@ function calculateBookingFee(rate,unit,startDate,endDate,startTime,endTime){
 function renderGuestRoomForm(){
   const body=document.getElementById('guestFormBody');
   const facAssets=DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
+  const bookableRooms=DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'&&String(r.CAN_BOOK||'TRUE').toUpperCase()!=='FALSE');
 
   body.innerHTML=`
     <div class="form-grid">
       <div class="form-full">
         <label>Ruangan *</label>
-        <select id="gr_ITEM_ID" onchange="onGuestRoomChange()">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select>
+        <select id="gr_ITEM_ID" onchange="onGuestRoomChange()">${selectOptions(bookableRooms,'ID','NAME',null,true)}</select>
       </div>
       <div>
         <label>Tanggal Mulai *</label>
@@ -2972,6 +2970,11 @@ function renderGuestRoomForm(){
     </div>
     <div class="hint" id="gr_fee_hint" style="margin-top:6px"></div>
   `;
+
+  if(!bookableRooms.length){
+    body.innerHTML='<div class="empty-state"><div class="e-icon">🏢</div>Tidak ada ruangan yang dapat dibooking saat ini.</div>';
+    return;
+  }
 
   setTimeout(onGuestRoomChange,30);
 }
@@ -3163,6 +3166,18 @@ async function submitGuestBooking(){
         return;
       }
 
+      if(String(room.CAN_BOOK||'TRUE').toUpperCase()==='FALSE'){
+        showToast('Ruangan ini tidak dapat dibooking. Silakan pilih ruangan lain.','warning');
+        renderGuestRoomForm();
+        return;
+      }
+
+      if(String(room.STATUS||'').toUpperCase()!=='TERSEDIA'){
+        showToast('Ruangan ini sedang tidak tersedia untuk booking. Silakan pilih ruangan lain.','warning');
+        renderGuestRoomForm();
+        return;
+      }
+
       const unit=String(room.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
       const start=unit==='JAM'?getValue('gr_START_TIME'):'00:00';
       const end=unit==='JAM'?getValue('gr_END_TIME'):'23:59';
@@ -3254,120 +3269,121 @@ async function submitGuestBooking(){
       await audit('CREATE','BOOKINGS',data.ID,'Booking ruangan (tamu): '+name+' - '+room.NAME);
       await saveDB();
       showGuestSuccess(data);
-    }else{
-      const date=getValue('ga_DATE');
-      const endDate=getValue('ga_END_DATE');
-      const start=getValue('ga_START_TIME');
-      const end=getValue('ga_END_TIME');
-      const purpose=getValue('ga_PURPOSE');
-
-      if(!date||!endDate||!start||!end||!purpose){
-        showToast('Lengkapi semua data peminjaman barang.','warning');
-        return;
-      }
-
-      const startDateTime=new Date(date+'T'+start);
-      const endDateTime=new Date(endDate+'T'+end);
-
-      if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
-        showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
-        return;
-      }
-
-      if(!STATE.guestCart.length){
-        showToast('Pilih minimal 1 barang untuk dipinjam.','warning');
-        return;
-      }
-
-      const duration=calculateBookingDuration(date,endDate,start,end);
-
-      for(const item of STATE.guestCart){
-        const totalStock=assetAvailableStock(item.ASSET_ID);
-        const reserved=DB.BOOKINGS.filter(b=>b.TYPE==='ASSET'&&['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS))
-          .filter(b=>{
-            const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
-            const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
-            return startDateTime<bEnd&&endDateTime>bStart;
-          })
-          .reduce((sum,b)=>{
-            const found=(b.ITEMS||[]).find(i=>i.ASSET_ID===item.ASSET_ID);
-            return sum+(found?Number(found.QTY)||0:0);
-          },0);
-
-        if(reserved+item.QTY>totalStock){
-          showToast('Stok "'+item.ASSET_NAME+'" tidak mencukupi pada jadwal tersebut. Tersedia: '+Math.max(totalStock-reserved,0)+'.','warning');
-          return;
-        }
-      }
-
-      const items=STATE.guestCart.map(c=>{
-        const asset=DB.ASSETS.find(a=>a.ID===c.ASSET_ID);
-        const rate=asset?Number(asset.RENTAL_FEE)||0:Number(c.FEE_PER_UNIT)||0;
-        const rateUnit=asset&&String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
-
-        return{
-          ASSET_ID:c.ASSET_ID,
-          ASSET_NAME:c.ASSET_NAME,
-          QTY:c.QTY,
-          FEE_PER_UNIT:rate,
-          RATE_UNIT:rateUnit,
-          ISSUED_UNIT_IDS:[],
-          RETURNED_UNIT_IDS:[]
-        };
-      });
-
-      const itemName=items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
-      const itemsSubtotal=items.reduce((sum,item)=>{
-        const qty=item.RATE_UNIT==='HARI'?duration.days:duration.hours;
-        return sum+(item.QTY*item.FEE_PER_UNIT*qty);
-      },0);
-
-      const facilityChecks=Array.from(document.querySelectorAll('.ga_fac_chk:checked')).map(x=>x.value);
-      let facilityFeeSum=0;
-      let facilityList=[];
-
-      facilityChecks.forEach(function(id){
-        const a=DB.ASSETS.find(x=>x.ID===id);
-        if(a){
-          facilityFeeSum+=Number(a.FACILITY_FEE)||0;
-          facilityList.push(a.NAME);
-        }
-      });
-
-      const data={
-        ID:uid('BKG'),
-        TYPE:'ASSET',
-        ITEM_ID:'',
-        ITEM_NAME:itemName,
-        USER_ID:'',
-        USER_NAME:name+' (Tamu)',
-        IS_GUEST:'TRUE',
-        GUEST_CONTACT:contact,
-        GUEST_INSTANSI:instansi,
-        DATE:date,
-        END_DATE:endDate,
-        START_TIME:start,
-        END_TIME:end,
-        DURATION_DAYS:duration.days,
-        DURATION_HOURS:duration.hours,
-        RATE_UNIT:'MIXED',
-        RATE:0,
-        PURPOSE:purpose,
-        ITEMS:items,
-        BASE_FEE:itemsSubtotal,
-        FACILITY_FEE:facilityFeeSum,
-        TOTAL_FEE:itemsSubtotal+facilityFeeSum,
-        FACILITY_LIST:facilityList.join(', '),
-        STATUS:'MENUNGGU',
-        NOTE:'',
-        CREATED_AT:nowStr()
-      };
-
-      DB.BOOKINGS.push(data);
-      await audit('CREATE','BOOKINGS',data.ID,'Peminjaman barang (tamu): '+name+' - '+itemName);
-      await saveDB();
-      showGuestSuccess(data);
+      return;
     }
+
+    const date=getValue('ga_DATE');
+    const endDate=getValue('ga_END_DATE');
+    const start=getValue('ga_START_TIME');
+    const end=getValue('ga_END_TIME');
+    const purpose=getValue('ga_PURPOSE');
+
+    if(!date||!endDate||!start||!end||!purpose){
+      showToast('Lengkapi semua data peminjaman barang.','warning');
+      return;
+    }
+
+    const startDateTime=new Date(date+'T'+start);
+    const endDateTime=new Date(endDate+'T'+end);
+
+    if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
+      showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
+      return;
+    }
+
+    if(!STATE.guestCart.length){
+      showToast('Pilih minimal 1 barang untuk dipinjam.','warning');
+      return;
+    }
+
+    const duration=calculateBookingDuration(date,endDate,start,end);
+
+    for(const item of STATE.guestCart){
+      const totalStock=assetAvailableStock(item.ASSET_ID);
+      const reserved=DB.BOOKINGS.filter(b=>b.TYPE==='ASSET'&&['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS))
+        .filter(b=>{
+          const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
+          const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
+          return startDateTime<bEnd&&endDateTime>bStart;
+        })
+        .reduce((sum,b)=>{
+          const found=(b.ITEMS||[]).find(i=>i.ASSET_ID===item.ASSET_ID);
+          return sum+(found?Number(found.QTY)||0:0);
+        },0);
+
+      if(reserved+item.QTY>totalStock){
+        showToast('Stok "'+item.ASSET_NAME+'" tidak mencukupi pada jadwal tersebut. Tersedia: '+Math.max(totalStock-reserved,0)+'.','warning');
+        return;
+      }
+    }
+
+    const items=STATE.guestCart.map(c=>{
+      const asset=DB.ASSETS.find(a=>a.ID===c.ASSET_ID);
+      const rate=asset?Number(asset.RENTAL_FEE)||0:Number(c.FEE_PER_UNIT)||0;
+      const rateUnit=asset&&String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+
+      return{
+        ASSET_ID:c.ASSET_ID,
+        ASSET_NAME:c.ASSET_NAME,
+        QTY:c.QTY,
+        FEE_PER_UNIT:rate,
+        RATE_UNIT:rateUnit,
+        ISSUED_UNIT_IDS:[],
+        RETURNED_UNIT_IDS:[]
+      };
+    });
+
+    const itemName=items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
+    const itemsSubtotal=items.reduce((sum,item)=>{
+      const qty=item.RATE_UNIT==='HARI'?duration.days:duration.hours;
+      return sum+(item.QTY*item.FEE_PER_UNIT*qty);
+    },0);
+
+    const facilityChecks=Array.from(document.querySelectorAll('.ga_fac_chk:checked')).map(x=>x.value);
+    let facilityFeeSum=0;
+    let facilityList=[];
+
+    facilityChecks.forEach(function(id){
+      const a=DB.ASSETS.find(x=>x.ID===id);
+      if(a){
+        facilityFeeSum+=Number(a.FACILITY_FEE)||0;
+        facilityList.push(a.NAME);
+      }
+    });
+
+    const data={
+      ID:uid('BKG'),
+      TYPE:'ASSET',
+      ITEM_ID:'',
+      ITEM_NAME:itemName,
+      USER_ID:'',
+      USER_NAME:name+' (Tamu)',
+      IS_GUEST:'TRUE',
+      GUEST_CONTACT:contact,
+      GUEST_INSTANSI:instansi,
+      DATE:date,
+      END_DATE:endDate,
+      START_TIME:start,
+      END_TIME:end,
+      DURATION_DAYS:duration.days,
+      DURATION_HOURS:duration.hours,
+      RATE_UNIT:'MIXED',
+      RATE:0,
+      PURPOSE:purpose,
+      ITEMS:items,
+      BASE_FEE:itemsSubtotal,
+      FACILITY_FEE:facilityFeeSum,
+      TOTAL_FEE:itemsSubtotal+facilityFeeSum,
+      FACILITY_LIST:facilityList.join(', '),
+      STATUS:'MENUNGGU',
+      NOTE:'',
+      CREATED_AT:nowStr()
+    };
+
+    DB.BOOKINGS.push(data);
+    await audit('CREATE','BOOKINGS',data.ID,'Peminjaman barang (tamu): '+name+' - '+itemName);
+    await saveDB();
+    showGuestSuccess(data);
   }catch(error){
     showToast(getErrorMessage(error),'error');
   }
