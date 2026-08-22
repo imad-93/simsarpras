@@ -2927,63 +2927,108 @@ function calculateBookingFee(rate,unit,startDate,endDate,startTime,endTime){
 function renderGuestRoomForm(){
   const body=document.getElementById('guestFormBody');
   const facAssets=DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
+
   body.innerHTML=`
     <div class="form-grid">
-      <div class="form-full"><label>Ruangan *</label><select id="gr_ITEM_ID" onchange="onGuestRoomChange()">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select></div>
-      <div><label>Tanggal Mulai *</label><input id="gr_DATE" type="date" min="${todayStr()}" onchange="onGuestRoomChange()"></div>
-      <div><label>Tanggal Selesai *</label><input id="gr_END_DATE" type="date" min="${todayStr()}" onchange="onGuestRoomChange()"></div>
-      <div><label>Jam Mulai *</label><input id="gr_START_TIME" type="time" onchange="onGuestRoomChange()"></div>
-      <div><label>Jam Selesai *</label><input id="gr_END_TIME" type="time" onchange="onGuestRoomChange()"></div>
-      <div><label>Satuan Tarif *</label><select id="gr_UNIT" onchange="onGuestRoomChange()"><option value="HARI">Hari</option><option value="JAM">Jam</option></select></div>
-      <div><label>Tarif</label><input id="gr_RATE" type="number" min="0" value="0" readonly></div>
+      <div class="form-full">
+        <label>Ruangan *</label>
+        <select id="gr_ITEM_ID" onchange="onGuestRoomChange()">${selectOptions(DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'),'ID','NAME',null,true)}</select>
+      </div>
+      <div>
+        <label>Tanggal Mulai *</label>
+        <input id="gr_DATE" type="date" min="${todayStr()}" onchange="onGuestRoomChange()">
+      </div>
+      <div>
+        <label>Tanggal Selesai *</label>
+        <input id="gr_END_DATE" type="date" min="${todayStr()}" onchange="onGuestRoomChange()">
+      </div>
+      <div id="gr_start_time_wrap" style="display:none">
+        <label>Jam Mulai *</label>
+        <input id="gr_START_TIME" type="time" onchange="onGuestRoomChange()">
+      </div>
+      <div id="gr_end_time_wrap" style="display:none">
+        <label>Jam Selesai *</label>
+        <input id="gr_END_TIME" type="time" onchange="onGuestRoomChange()">
+      </div>
+      <div>
+        <label>Satuan Tarif</label>
+        <input id="gr_UNIT_DISPLAY" value="Per Hari" readonly>
+        <input id="gr_UNIT" type="hidden" value="HARI">
+      </div>
+      <div>
+        <label>Tarif</label>
+        <input id="gr_RATE" type="number" min="0" value="0" readonly>
+      </div>
       ${facAssets.length?`<div class="form-full">
         <label>Fasilitas Tambahan (biaya berlaku)</label>
         <div id="gr_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
           ${facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="gr_fac_chk" type="checkbox" data-fee="${a.FACILITY_FEE||0}" value="${a.ID}" onchange="onGuestRoomChange()"> ${escapeHtml(a.NAME)} (${escapeHtml(formatCurrency(a.FACILITY_FEE||0))})</label>`).join('')}
         </div>
       </div>`:''}
-      <div class="form-full"><label>Tujuan / Keperluan *</label><textarea id="gr_PURPOSE" placeholder="Contoh: Rapat koordinasi"></textarea></div>
+      <div class="form-full">
+        <label>Tujuan / Keperluan *</label>
+        <textarea id="gr_PURPOSE" placeholder="Contoh: Rapat koordinasi"></textarea>
+      </div>
     </div>
     <div class="hint" id="gr_fee_hint" style="margin-top:6px"></div>
   `;
+
   setTimeout(onGuestRoomChange,30);
 }
-
 function onGuestRoomChange(){
   const id=getValue('gr_ITEM_ID');
   const room=DB.ROOMS.find(r=>r.ID===id);
   const startDate=getValue('gr_DATE');
   const endDate=getValue('gr_END_DATE');
-  const startTime=getValue('gr_START_TIME');
-  const endTime=getValue('gr_END_TIME');
-  const unit=getValue('gr_UNIT')||'HARI';
   const hint=document.getElementById('gr_fee_hint');
   const rateInput=document.getElementById('gr_RATE');
+  const unitInput=document.getElementById('gr_UNIT');
+  const unitDisplay=document.getElementById('gr_UNIT_DISPLAY');
+  const startTimeWrap=document.getElementById('gr_start_time_wrap');
+  const endTimeWrap=document.getElementById('gr_end_time_wrap');
 
-  if(!hint)return;
+  if(!hint||!room)return;
 
-  const rate=room?(Number(room.RENTAL_FEE)||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0):0;
-  const duration=calculateBookingFee(rate,unit,startDate,endDate,startTime,endTime);
-  const facTotal=Array.from(document.querySelectorAll('.gr_fac_chk:checked')).reduce((s,x)=>s+(Number(x.dataset.fee)||0),0);
+  const rate=Number(room.RENTAL_FEE)||0;
+  const unit=String(room.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
 
+  if(unitInput)unitInput.value=unit;
+  if(unitDisplay)unitDisplay.value=unit==='HARI'?'Per Hari':'Per Jam';
   if(rateInput)rateInput.value=rate;
 
-  if(!room){
-    hint.textContent='';
-    return;
-  }
+  if(startTimeWrap)startTimeWrap.style.display=unit==='JAM'?'block':'none';
+  if(endTimeWrap)endTimeWrap.style.display=unit==='JAM'?'block':'none';
 
-  if(!startDate||!endDate||!startTime||!endTime){
+  const startTime=unit==='JAM'?getValue('gr_START_TIME'):'00:00';
+  const endTime=unit==='JAM'?getValue('gr_END_TIME'):'23:59';
+
+  const facTotal=Array.from(document.querySelectorAll('.gr_fac_chk:checked')).reduce((s,x)=>s+(Number(x.dataset.fee)||0),0);
+
+  if(!startDate||!endDate){
     hint.innerHTML='Tarif: <b>'+formatCurrency(rate)+'</b> per '+(unit==='HARI'?'hari':'jam');
     return;
   }
 
-  if(new Date(endDate+'T'+endTime)<new Date(startDate+'T'+startTime)){
-    hint.innerHTML='<span style="color:#D93025">Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.</span>';
+  if(unit==='JAM'&&(!startTime||!endTime)){
+    hint.innerHTML='Tarif: <b>'+formatCurrency(rate)+'</b> per jam. Silakan tentukan jam mulai dan jam selesai.';
     return;
   }
 
-  hint.innerHTML='Durasi: <b>'+duration.days+' hari</b> / <b>'+duration.hours+' jam</b> · Tarif: <b>'+formatCurrency(rate)+'</b> per '+(unit==='HARI'?'hari':'jam')+' · Sewa: <b>'+formatCurrency(duration.total)+'</b>'+(facTotal?' · Fasilitas: <b>'+formatCurrency(facTotal)+'</b>':'')+' · <b>Total: '+formatCurrency(duration.total+facTotal)+'</b>';
+  const startDateTime=new Date(startDate+'T'+startTime);
+  const endDateTime=new Date(endDate+'T'+endTime);
+
+  if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
+    hint.innerHTML='<span style="color:#D93025">'+(unit==='HARI'?'Tanggal selesai harus sama atau lebih besar dari tanggal mulai.':'Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.')+'</span>';
+    return;
+  }
+
+  const calculation=calculateBookingFee(rate,unit,startDate,endDate,startTime,endTime);
+
+  if(unit==='HARI'){
+    hint.innerHTML='Durasi: <b>'+calculation.days+' hari</b> · Tarif: <b>'+formatCurrency(rate)+'</b> per hari · Sewa: <b>'+formatCurrency(calculation.total)+'</b>'+(facTotal?' · Fasilitas: <b>'+formatCurrency(facTotal)+'</b>':'')+' · <b>Total: '+formatCurrency(calculation.total+facTotal)+'</b>';
+  }else{
+    hint.innerHTML='Durasi: <b>'+calculation.hours+' jam</b> · Tarif: <b>'+formatCurrency(rate)+'</b> per jam · Sewa: <b>'+formatCurrency(calculation.total)+'</b>'+(facTotal?' · Fasilitas: <b>'+formatCurrency(facTotal)+'</b>':'')+' · <b>Total: '+formatCurrency(calculation.total+facTotal)+'</b>';
+  }
 }
 function renderGuestAssetForm(){
   const body=document.getElementById('guestFormBody');
@@ -3104,20 +3149,10 @@ async function submitGuestBooking(){
       const itemId=getValue('gr_ITEM_ID');
       const date=getValue('gr_DATE');
       const endDate=getValue('gr_END_DATE');
-      const start=getValue('gr_START_TIME');
-      const end=getValue('gr_END_TIME');
       const purpose=getValue('gr_PURPOSE');
 
-      if(!itemId||!date||!endDate||!start||!end||!purpose){
+      if(!itemId||!date||!endDate||!purpose){
         showToast('Lengkapi semua data booking ruangan.','warning');
-        return;
-      }
-
-      const startDateTime=new Date(date+'T'+start);
-      const endDateTime=new Date(endDate+'T'+end);
-
-      if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
-        showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
         return;
       }
 
@@ -3128,11 +3163,42 @@ async function submitGuestBooking(){
         return;
       }
 
+      const unit=String(room.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+      const start=unit==='JAM'?getValue('gr_START_TIME'):'00:00';
+      const end=unit==='JAM'?getValue('gr_END_TIME'):'23:59';
+
+      if(unit==='JAM'&&(!start||!end)){
+        showToast('Untuk ruangan dengan tarif per jam, jam mulai dan jam selesai wajib diisi.','warning');
+        return;
+      }
+
+      const startDateTime=new Date(date+'T'+start);
+      const endDateTime=new Date(endDate+'T'+end);
+
+      if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())){
+        showToast('Tanggal atau waktu booking tidak valid.','warning');
+        return;
+      }
+
+      if(unit==='HARI'){
+        if(endDate<date){
+          showToast('Tanggal selesai tidak boleh lebih kecil dari tanggal mulai.','warning');
+          return;
+        }
+      }else{
+        if(endDateTime<=startDateTime){
+          showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
+          return;
+        }
+      }
+
       const conflict=DB.BOOKINGS.some(b=>{
         if(b.TYPE!=='ROOM'||b.ITEM_ID!==itemId)return false;
         if(!['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS))return false;
+
         const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
         const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
+
         return startDateTime<bEnd&&endDateTime>bStart;
       });
 
@@ -3141,8 +3207,9 @@ async function submitGuestBooking(){
         return;
       }
 
-      const baseRate=Number(room.RENTAL_FEE)||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0;
-      const calculation=calculateBookingFee(baseRate,'HARI',date,endDate,start,end);
+      const baseRate=Number(room.RENTAL_FEE)||0;
+      const calculation=calculateBookingFee(baseRate,unit,date,endDate,start,end);
+
       const facilityChecks=Array.from(document.querySelectorAll('.gr_fac_chk:checked')).map(x=>x.value);
       let facilityFeeSum=0;
       let facilityList=[];
@@ -3171,7 +3238,7 @@ async function submitGuestBooking(){
         END_TIME:end,
         DURATION_DAYS:calculation.days,
         DURATION_HOURS:calculation.hours,
-        RATE_UNIT:'HARI',
+        RATE_UNIT:unit,
         RATE:baseRate,
         PURPOSE:purpose,
         BASE_FEE:calculation.total,
@@ -3306,9 +3373,11 @@ async function submitGuestBooking(){
   }
 }
 function showGuestSuccess(data){
+  const durationText=data.RATE_UNIT==='JAM'?(data.DURATION_HOURS||0)+' jam':(data.DURATION_DAYS||0)+' hari';
+  const unitText=data.RATE_UNIT==='HARI'?'Hari':data.RATE_UNIT==='JAM'?'Jam':'Campuran';
+  const timeRow=data.RATE_UNIT==='JAM'?`<div class="kv"><span>Waktu</span><b>${escapeHtml(data.START_TIME)}–${escapeHtml(data.END_TIME)}</b></div>`:'';
+
   const el=document.getElementById('guestContent');
-  const durationText=(data.DURATION_DAYS||0)+' hari / '+(data.DURATION_HOURS||0)+' jam';
-  const unitText=data.RATE_UNIT==='HARI'?'Hari':'Jam';
 
   el.innerHTML=`
     <div style="text-align:center;padding:20px 10px">
@@ -3319,7 +3388,7 @@ function showGuestSuccess(data){
       <div style="margin-top:14px;text-align:left">
         <div class="kv"><span>Item</span><b>${escapeHtml(data.ITEM_NAME)}</b></div>
         <div class="kv"><span>Tanggal</span><b>${escapeHtml(data.DATE)} s/d ${escapeHtml(data.END_DATE||data.DATE)}</b></div>
-        <div class="kv"><span>Waktu</span><b>${escapeHtml(data.START_TIME)}–${escapeHtml(data.END_TIME)}</b></div>
+        ${timeRow}
         <div class="kv"><span>Akumulasi</span><b>${escapeHtml(durationText)}</b></div>
         <div class="kv"><span>Satuan Tarif</span><b>${escapeHtml(unitText)}</b></div>
         <div class="kv"><span>Total Biaya</span><b>${escapeHtml(formatCurrency(data.TOTAL_FEE||0))}</b></div>
