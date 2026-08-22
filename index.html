@@ -595,7 +595,7 @@ function TABLE_CONFIGS(){
 
     ROOMS:{
       title:'Ruangan', icon:'🚪', permManage:'room.manage',
-      columns:[['CODE','Kode'],['NAME','Nama'],['BUILDING_ID','Gedung'],['FLOOR','Lantai'],['CAPACITY','Kapasitas'],['RENTAL_FEE','Tarif'],['STATUS','Status']],
+      columns:[['CODE','Kode'],['NAME','Nama'],['BUILDING_ID','Gedung'],['FLOOR','Lantai'],['CAPACITY','Kapasitas'],['RENTAL_FEE','Tarif'],['RENTAL_UNIT','Satuan'],['STATUS','Status']],
       fields:[
         {key:'CODE',label:'Kode Ruangan',required:true},
         {key:'NAME',label:'Nama Ruangan',required:true},
@@ -603,6 +603,7 @@ function TABLE_CONFIGS(){
         {key:'FLOOR',label:'Lantai',type:'number'},
         {key:'CAPACITY',label:'Kapasitas (orang)',type:'number'},
         {key:'RENTAL_FEE',label:'Tarif Sewa (Rp/pemakaian)',type:'number'},
+        {key:'RENTAL_UNIT',label:'Satuan Tarif',type:'select',options:[['HARI','Per Hari'],['JAM','Per Jam']],default:'HARI'},
         {key:'FACILITIES',label:'Fasilitas',full:true,placeholder:'AC, Proyektor, Sound system, ...'},
         {key:'STATUS',label:'Status',type:'select',options:[['TERSEDIA','Tersedia'],['MAINTENANCE','Maintenance'],['NONAKTIF','Nonaktif']],default:'TERSEDIA'},
         {key:'DESCRIPTION',label:'Deskripsi',type:'textarea',full:true}
@@ -803,7 +804,10 @@ function migrateDB(){
   if(DB.SEQ.STOCK_TAKEOUTS===undefined)DB.SEQ.STOCK_TAKEOUTS=0;
   if(!DB.APP_SETTINGS)DB.APP_SETTINGS={};
   if(DB.APP_SETTINGS.ENABLE_STOCK===undefined)DB.APP_SETTINGS.ENABLE_STOCK='TRUE';
-
+  (DB.ROOMS||[]).forEach(function(room){
+    room.RENTAL_FEE=Number(room.RENTAL_FEE)||0;
+    room.RENTAL_UNIT=String(room.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+  });
   (DB.ASSETS||[]).forEach(function(asset){
     if(asset.RENTAL_FEE===undefined)asset.RENTAL_FEE=0;
     if(asset.RENTAL_UNIT===undefined)asset.RENTAL_UNIT='HARI';
@@ -1274,62 +1278,107 @@ function renderGenericTable(tableName,rows,canManage){
 }
 
 function genericForm(tableName,row){
-  row = row || {};
-  const cfg = TABLE_CONFIGS()[tableName];
-  const fieldsHtml = cfg.fields.map(function(f){
-    const val = row[f.key]!==undefined ? row[f.key] : (f.default!==undefined?f.default:'');
-    const wrap = f.full ? 'form-full' : '';
-    let inputHtml = '';
-    if(f.type==='textarea'){
-      inputHtml = `<textarea id="gf_${f.key}" placeholder="${escapeHtml(f.placeholder||'')}">${escapeHtml(val)}</textarea>`;
-    }else if(f.type==='select' && f.options){
-      inputHtml = `<select id="gf_${f.key}">${f.options.map(o=>'<option value="'+escapeHtml(o[0])+'" '+(String(o[0])===String(val)?'selected':'')+'>'+escapeHtml(o[1])+'</option>').join('')}</select>`;
-    }else if(f.type==='select' && f.ref){
-      inputHtml = `<select id="gf_${f.key}">${selectOptions(DB[f.ref]||[],'ID','NAME',val,true)}</select>`;
+  row=row||{};
+  const cfg=TABLE_CONFIGS()[tableName];
+  const fieldsHtml=cfg.fields.map(function(f){
+    const val=row[f.key]!==undefined?row[f.key]:(f.default!==undefined?f.default:'');
+    const wrap=f.full?'form-full':'';
+    let inputHtml='';
+
+    if(tableName==='ROOMS'&&f.key==='RENTAL_FEE'){
+      inputHtml=`<input id="gf_${f.key}" type="number" min="0" value="${escapeHtml(val)}" placeholder="${escapeHtml(f.placeholder||'')}">`;
+    }else if(tableName==='ROOMS'&&f.key==='RENTAL_UNIT'){
+      const unit=String(val||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+      inputHtml=`<select id="gf_${f.key}"><option value="HARI" ${unit==='HARI'?'selected':''}>Per Hari</option><option value="JAM" ${unit==='JAM'?'selected':''}>Per Jam</option></select>`;
+    }else if(f.type==='textarea'){
+      inputHtml=`<textarea id="gf_${f.key}" placeholder="${escapeHtml(f.placeholder||'')}">${escapeHtml(val)}</textarea>`;
+    }else if(f.type==='select'&&f.options){
+      inputHtml=`<select id="gf_${f.key}">${f.options.map(o=>'<option value="'+escapeHtml(o[0])+'" '+(String(o[0])===String(val)?'selected':'')+'>'+escapeHtml(o[1])+'</option>').join('')}</select>`;
+    }else if(f.type==='select'&&f.ref){
+      inputHtml=`<select id="gf_${f.key}">${selectOptions(DB[f.ref]||[],'ID','NAME',val,true)}</select>`;
     }else if(f.type==='number'){
-      inputHtml = `<input id="gf_${f.key}" type="number" value="${escapeHtml(val)}" placeholder="${escapeHtml(f.placeholder||'')}">`;
+      inputHtml=`<input id="gf_${f.key}" type="number" value="${escapeHtml(val)}" placeholder="${escapeHtml(f.placeholder||'')}">`;
     }else if(f.type==='color'){
-      inputHtml = `<input id="gf_${f.key}" type="color" value="${escapeHtml(val||'#4F46E5')}" style="height:42px;padding:4px">`;
+      inputHtml=`<input id="gf_${f.key}" type="color" value="${escapeHtml(val||'#4F46E5')}" style="height:42px;padding:4px">`;
     }else{
-      inputHtml = `<input id="gf_${f.key}" value="${escapeHtml(val)}" placeholder="${escapeHtml(f.placeholder||'')}">`;
+      inputHtml=`<input id="gf_${f.key}" value="${escapeHtml(val)}" placeholder="${escapeHtml(f.placeholder||'')}">`;
     }
+
     return `<div class="${wrap}"><label>${escapeHtml(f.label)}${f.required?' *':''}</label>${inputHtml}</div>`;
   }).join('');
 
+  const hint=tableName==='ROOMS'?'<div class="hint" style="margin-top:8px">Tarif dan satuan tarif ruangan hanya dapat diatur oleh pengguna yang memiliki hak kelola ruangan. Booking tamu akan mengikuti konfigurasi ini secara otomatis.</div>':'';
+
   openModal(
-    (row.ID ? 'Edit ' : 'Tambah ') + cfg.title,
-    `<div class="form-grid">${fieldsHtml}</div>`,
+    (row.ID?'Edit ':'Tambah ')+cfg.title,
+    `<div class="form-grid">${fieldsHtml}</div>${hint}`,
     [
       `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
       `<button class="btn btn-primary" onclick="genericSave('${tableName}','${row.ID||''}')">💾 Simpan</button>`
     ]
   );
 }
-
 async function genericSave(tableName,id){
   try{
-    const cfg = TABLE_CONFIGS()[tableName];
+    const cfg=TABLE_CONFIGS()[tableName];
     requirePerm(cfg.permManage);
-    const data = {};
-    let missing = false;
+    const data={};
+    let missing=false;
+
     cfg.fields.forEach(function(f){
-      const el = document.getElementById('gf_'+f.key);
-      const val = el ? el.value : '';
-      if(f.required && !val) missing = true;
-      data[f.key] = val;
+      const el=document.getElementById('gf_'+f.key);
+      let val=el?el.value:'';
+
+      if(tableName==='ROOMS'&&f.key==='RENTAL_FEE'){
+        val=Number(val)||0;
+      }
+
+      if(tableName==='ROOMS'&&f.key==='RENTAL_UNIT'){
+        val=String(val||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+      }
+
+      if(f.required&&!val)missing=true;
+      data[f.key]=val;
     });
-    if(missing){ showToast('Mohon lengkapi kolom wajib (*).','warning'); return; }
+
+    if(missing){
+      showToast('Mohon lengkapi kolom wajib (*).','warning');
+      return;
+    }
+
+    if(tableName==='ROOMS'){
+      data.RENTAL_FEE=Number(data.RENTAL_FEE)||0;
+      data.RENTAL_UNIT=String(data.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+    }
 
     if(id){
-      const idx = DB[tableName].findIndex(x=>x.ID===id);
-      DB[tableName][idx] = Object.assign({},DB[tableName][idx],data);
-      await audit('UPDATE',tableName,id,'Update data '+ (data.NAME||data.CODE||id));
+      const idx=DB[tableName].findIndex(x=>x.ID===id);
+      if(idx<0){
+        showToast('Data tidak ditemukan.','error');
+        return;
+      }
+
+      DB[tableName][idx]=Object.assign({},DB[tableName][idx],data);
+
+      await audit(
+        'UPDATE',
+        tableName,
+        id,
+        'Update data '+(data.NAME||data.CODE||id)+(tableName==='ROOMS'?' dengan tarif '+data.RENTAL_FEE+'/'+data.RENTAL_UNIT:'')
+      );
     }else{
-      data.ID = uid(tableName.substring(0,3));
-      data.CREATED_AT = nowStr();
+      data.ID=uid(tableName.substring(0,3));
+      data.CREATED_AT=nowStr();
       DB[tableName].push(data);
-      await audit('CREATE',tableName,data.ID,'Tambah data '+ (data.NAME||data.CODE||data.ID));
+
+      await audit(
+        'CREATE',
+        tableName,
+        data.ID,
+        'Tambah data '+(data.NAME||data.CODE||data.ID)+(tableName==='ROOMS'?' dengan tarif '+data.RENTAL_FEE+'/'+data.RENTAL_UNIT:'')
+      );
     }
+
     await saveDB();
     closeModal();
     showToast('Data berhasil disimpan.','success');
@@ -1338,7 +1387,6 @@ async function genericSave(tableName,id){
     showToast(getErrorMessage(error),'error');
   }
 }
-
 async function genericDelete(tableName,id){
   try{
     const cfg = TABLE_CONFIGS()[tableName];
@@ -1358,22 +1406,42 @@ async function genericDelete(tableName,id){
    IMPORT RUANGAN (Excel)
 ========================================================= */
 function downloadRoomTemplate(){
-  const contoh = [{
-    'Kode Ruangan':'R999','Nama Ruangan':'Ruang Kelas 999',
-    'Gedung':(DB.BUILDINGS[0]?DB.BUILDINGS[0].NAME:''),
-    'Lantai':1,'Kapasitas':40,'Tarif Sewa (Rp/pemakaian)':0,
-    'Fasilitas':'AC, Proyektor','Status (TERSEDIA/MAINTENANCE/NONAKTIF)':'TERSEDIA','Deskripsi':''
+  const contoh=[{
+    'Kode Ruangan':'R999',
+    'Nama Ruangan':'Ruang Kelas 999',
+    'Gedung':DB.BUILDINGS[0]?DB.BUILDINGS[0].NAME:'',
+    'Lantai':1,
+    'Kapasitas':40,
+    'Tarif Sewa':0,
+    'Satuan Tarif (HARI/JAM)':'HARI',
+    'Fasilitas':'AC, Proyektor',
+    'Status (TERSEDIA/MAINTENANCE/NONAKTIF)':'TERSEDIA',
+    'Deskripsi':''
   }];
-  const buildingRef = DB.BUILDINGS.map(b=>({'Nama Gedung':b.NAME}));
-  downloadExcelWorkbook(contoh,'Import Ruangan','Template_Import_Ruangan.xlsx',[
-    {name:'Daftar Gedung (referensi)',rows:buildingRef.length?buildingRef:[{'Nama Gedung':'(belum ada gedung, buat dulu di menu Gedung)'}]},
-    {name:'Petunjuk',rows:[
-      {'Kolom':'Kode Ruangan / Nama Ruangan','Keterangan':'Wajib diisi.'},
-      {'Kolom':'Gedung','Keterangan':'Harus sama persis dengan nama di sheet Daftar Gedung. Kosongkan kalau tidak yakin.'},
-      {'Kolom':'Tarif Sewa','Keterangan':'Hanya berlaku untuk booking oleh Tamu. Booking internal selalu gratis.'},
-      {'Kolom':'Status','Keterangan':'Isi salah satu: TERSEDIA, MAINTENANCE, atau NONAKTIF.'}
-    ]}
-  ]);
+
+  const buildingRef=DB.BUILDINGS.map(b=>({'Nama Gedung':b.NAME}));
+
+  downloadExcelWorkbook(
+    contoh,
+    'Import Ruangan',
+    'Template_Import_Ruangan.xlsx',
+    [
+      {
+        name:'Daftar Gedung (referensi)',
+        rows:buildingRef.length?buildingRef:[{'Nama Gedung':'(belum ada gedung, buat dulu di menu Gedung)'}]
+      },
+      {
+        name:'Petunjuk',
+        rows:[
+          {'Kolom':'Kode Ruangan / Nama Ruangan','Keterangan':'Wajib diisi.'},
+          {'Kolom':'Gedung','Keterangan':'Harus sama persis dengan nama di sheet Daftar Gedung. Kosongkan kalau tidak yakin.'},
+          {'Kolom':'Tarif Sewa','Keterangan':'Tarif peminjaman ruangan yang ditentukan admin.'},
+          {'Kolom':'Satuan Tarif (HARI/JAM)','Keterangan':'Isi HARI untuk tarif per hari atau JAM untuk tarif per jam.'},
+          {'Kolom':'Status','Keterangan':'Isi salah satu: TERSEDIA, MAINTENANCE, atau NONAKTIF.'}
+        ]
+      }
+    ]
+  );
 }
 function roomImportForm(){
   openModal('📥 Import Data Ruangan (Excel)', `
@@ -1394,42 +1462,89 @@ function roomImportForm(){
   ]);
 }
 async function processRoomImport(){
-  const resultEl = document.getElementById('roomImportResult');
+  const resultEl=document.getElementById('roomImportResult');
+
   try{
     requirePerm('room.manage');
-    resultEl.innerHTML = '';
-    const rows = await readExcelFile(document.getElementById('roomImportFile'));
-    let success=0, skipped=0; const notes=[];
+    resultEl.innerHTML='';
+
+    const rows=await readExcelFile(document.getElementById('roomImportFile'));
+    let success=0;
+    let skipped=0;
+    const notes=[];
+
     rows.forEach(function(r,idx){
-      const code = String(r['Kode Ruangan']||'').trim();
-      const name = String(r['Nama Ruangan']||'').trim();
-      if(!code || !name){ skipped++; notes.push('Baris '+(idx+2)+': Kode/Nama Ruangan kosong, dilewati.'); return; }
-      const buildName = String(r['Gedung']||'').trim();
-      const building = DB.BUILDINGS.find(b=>b.NAME.toLowerCase()===buildName.toLowerCase());
-      if(buildName && !building) notes.push('Baris '+(idx+2)+': gedung "'+buildName+'" tidak ditemukan, dikosongkan.');
-      const statusRaw = String(r['Status (TERSEDIA/MAINTENANCE/NONAKTIF)']||'TERSEDIA').trim().toUpperCase();
-      const status = ['TERSEDIA','MAINTENANCE','NONAKTIF'].includes(statusRaw) ? statusRaw : 'TERSEDIA';
+      const code=String(r['Kode Ruangan']||'').trim();
+      const name=String(r['Nama Ruangan']||'').trim();
+
+      if(!code||!name){
+        skipped++;
+        notes.push('Baris '+(idx+2)+': Kode/Nama Ruangan kosong, dilewati.');
+        return;
+      }
+
+      const buildName=String(r['Gedung']||'').trim();
+      const building=DB.BUILDINGS.find(b=>String(b.NAME||'').toLowerCase()===buildName.toLowerCase());
+
+      if(buildName&&!building){
+        notes.push('Baris '+(idx+2)+': gedung "'+buildName+'" tidak ditemukan, dikosongkan.');
+      }
+
+      const statusRaw=String(r['Status (TERSEDIA/MAINTENANCE/NONAKTIF)']||'TERSEDIA').trim().toUpperCase();
+      const status=['TERSEDIA','MAINTENANCE','NONAKTIF'].includes(statusRaw)?statusRaw:'TERSEDIA';
+
+      const rentalFee=Number(r['Tarif Sewa'])||0;
+      const rentalUnitRaw=String(r['Satuan Tarif (HARI/JAM)']||'HARI').trim().toUpperCase();
+      const rentalUnit=rentalUnitRaw==='JAM'?'JAM':'HARI';
+
+      if(rentalUnitRaw&&!['HARI','JAM'].includes(rentalUnitRaw)){
+        notes.push('Baris '+(idx+2)+': satuan tarif tidak valid, digunakan HARI.');
+      }
+
+      const duplicate=DB.ROOMS.some(x=>String(x.CODE||'').toLowerCase()===code.toLowerCase());
+
+      if(duplicate){
+        skipped++;
+        notes.push('Baris '+(idx+2)+': kode ruangan "'+code+'" sudah ada, dilewati.');
+        return;
+      }
+
       DB.ROOMS.push({
-        ID:uid('RM'), CODE:code, NAME:name, BUILDING_ID:building?building.ID:'',
-        FLOOR:r['Lantai']||'', CAPACITY:r['Kapasitas']||'',
-        RENTAL_FEE:Number(r['Tarif Sewa (Rp/pemakaian)'])||0,
-        FACILITIES:String(r['Fasilitas']||''), STATUS:status,
-        DESCRIPTION:String(r['Deskripsi']||''), CREATED_AT:nowStr()
+        ID:uid('RM'),
+        CODE:code,
+        NAME:name,
+        BUILDING_ID:building?building.ID:'',
+        FLOOR:r['Lantai']||'',
+        CAPACITY:r['Kapasitas']||'',
+        RENTAL_FEE:rentalFee,
+        RENTAL_UNIT:rentalUnit,
+        FACILITIES:String(r['Fasilitas']||''),
+        STATUS:status,
+        DESCRIPTION:String(r['Deskripsi']||''),
+        CREATED_AT:nowStr()
       });
+
       success++;
     });
+
     if(success>0){
       await audit('IMPORT','ROOMS','-','Import '+success+' ruangan dari Excel');
       await saveDB();
     }
-    resultEl.innerHTML = '<div class="'+(success>0?'toast success':'error')+'" style="position:static">'+
-      '✅ Berhasil import '+success+' ruangan'+(skipped?', '+skipped+' baris dilewati':'')+'.'+
-      (notes.length? '<div style="margin-top:8px;font-size:11.5px;text-align:left">'+notes.map(escapeHtml).join('<br>')+'</div>':'')+
-      '</div>';
-    if(success>0){ showToast(success+' ruangan berhasil diimpor.','success'); renderGeneric('ROOMS'); }
-  }catch(error){ resultEl.innerHTML = '<div class="error">'+escapeHtml(getErrorMessage(error))+'</div>'; }
-}
 
+    resultEl.innerHTML='<div class="'+(success>0?'toast success':'error')+'" style="position:static">'+
+      '✅ Berhasil import '+success+' ruangan'+(skipped?', '+skipped+' baris dilewati':'')+'.'+
+      (notes.length?'<div style="margin-top:8px;font-size:11.5px;text-align:left">'+notes.map(escapeHtml).join('<br>')+'</div>':'')+
+      '</div>';
+
+    if(success>0){
+      showToast(success+' ruangan berhasil diimpor.','success');
+      renderGeneric('ROOMS');
+    }
+  }catch(error){
+    resultEl.innerHTML='<div class="error">'+escapeHtml(getErrorMessage(error))+'</div>';
+  }
+}
 /* =========================================================
    ASSETS
 ========================================================= */
