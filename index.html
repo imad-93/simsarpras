@@ -798,23 +798,41 @@ async function loadDB(){
   await saveDB();
 }
 function migrateDB(){
-  if(!Array.isArray(DB.STOCK_TAKEOUTS)) DB.STOCK_TAKEOUTS = [];
-  if(!DB.SEQ) DB.SEQ = {};
-  if(DB.SEQ.STOCK_TAKEOUTS===undefined) DB.SEQ.STOCK_TAKEOUTS = 0;
-  if(!DB.APP_SETTINGS) DB.APP_SETTINGS = {};
-  if(DB.APP_SETTINGS.ENABLE_STOCK===undefined) DB.APP_SETTINGS.ENABLE_STOCK = 'TRUE';
+  if(!Array.isArray(DB.STOCK_TAKEOUTS))DB.STOCK_TAKEOUTS=[];
+  if(!DB.SEQ)DB.SEQ={};
+  if(DB.SEQ.STOCK_TAKEOUTS===undefined)DB.SEQ.STOCK_TAKEOUTS=0;
+  if(!DB.APP_SETTINGS)DB.APP_SETTINGS={};
+  if(DB.APP_SETTINGS.ENABLE_STOCK===undefined)DB.APP_SETTINGS.ENABLE_STOCK='TRUE';
 
-  // sinkronkan hak akses baru ke role yang sudah tersimpan sebelumnya (upgrade aplikasi)
-  const allPermCodes = PERMISSIONS.map(p=>p[0]);
+  (DB.ASSETS||[]).forEach(function(asset){
+    if(asset.RENTAL_FEE===undefined)asset.RENTAL_FEE=0;
+    if(asset.RENTAL_UNIT===undefined)asset.RENTAL_UNIT='HARI';
+    asset.RENTAL_UNIT=String(asset.RENTAL_UNIT).toUpperCase()==='JAM'?'JAM':'HARI';
+  });
+
+  (DB.ASSET_UNITS||[]).forEach(function(unit){
+    const asset=DB.ASSETS.find(a=>a.ID===unit.ASSET_ID);
+    if(asset){
+      unit.RENTAL_FEE=Number(asset.RENTAL_FEE)||0;
+      unit.RENTAL_UNIT=String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+    }else{
+      if(unit.RENTAL_FEE===undefined)unit.RENTAL_FEE=0;
+      unit.RENTAL_UNIT=String(unit.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+    }
+  });
+
+  const allPermCodes=PERMISSIONS.map(p=>p[0]);
   (DB.ROLES||[]).forEach(function(role){
-    if(!Array.isArray(role.PERMS)) role.PERMS = [];
+    if(!Array.isArray(role.PERMS))role.PERMS=[];
     if(role.CODE==='ADMIN'){
-      role.PERMS = allPermCodes.slice();
+      role.PERMS=allPermCodes.slice();
       return;
     }
-    const def = DEFAULT_ROLES.find(r=>r.CODE===role.CODE);
-    if(def && !def.ALL){
-      def.PERMS.forEach(function(p){ if(!role.PERMS.includes(p)) role.PERMS.push(p); });
+    const def=DEFAULT_ROLES.find(r=>r.CODE===role.CODE);
+    if(def&&!def.ALL){
+      def.PERMS.forEach(function(p){
+        if(!role.PERMS.includes(p))role.PERMS.push(p);
+      });
     }
   });
 }
@@ -1484,8 +1502,8 @@ function assetDetail(row){
   `, [`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);
 }
 function assetForm(row){
-  row = row || {};
-  openModal(row.ID?'Edit Aset':'Tambah Aset', `
+  row=row||{};
+  openModal(row.ID?'Edit Aset':'Tambah Aset',`
     <div class="form-grid">
       <div><label>Kode</label><input id="f_CODE" value="${escapeHtml(row.CODE||'')}" placeholder="Biarkan kosong untuk auto-generate"></div>
       <div><label>Nama Aset *</label><input id="f_NAME" value="${escapeHtml(row.NAME||'')}"></div>
@@ -1497,8 +1515,9 @@ function assetForm(row){
       <div><label>Tahun Perolehan</label><input id="f_ACQUISITION_YEAR" type="number" value="${escapeHtml(row.ACQUISITION_YEAR||'')}"></div>
       <div><label>Harga Satuan (nilai aset)</label><input id="f_UNIT_PRICE" type="number" min="0" value="${escapeHtml(row.UNIT_PRICE||'')}"></div>
       <div style="display:flex;align-items:flex-end"><label class="checkline" style="margin:0"><input id="f_CAN_LEND" type="checkbox" onchange="onAssetCanLendChange()"> Bisa Dipinjamkan</label></div>
-      <div id="f_rentalFeeWrap"><label>Harga Sewa/Pinjam per unit (Rp)</label><input id="f_RENTAL_FEE" type="number" min="0" value="${escapeHtml(row.RENTAL_FEE||0)}"></div>
-      <div style="display:flex;align-items:flex-end"><label class="checkline" style="margin:0"><input id="f_IS_FACILITY" type="checkbox" onchange="onAssetIsFacilityChange()"> Fasilitas Tambahan (mis. AC, Sound System)</label></div>
+      <div id="f_rentalFeeWrap"><label>Tarif Peminjaman</label><input id="f_RENTAL_FEE" type="number" min="0" value="${escapeHtml(row.RENTAL_FEE||0)}"></div>
+      <div id="f_rentalUnitWrap"><label>Satuan Tarif</label><select id="f_RENTAL_UNIT"><option value="HARI" ${String(row.RENTAL_UNIT||'HARI').toUpperCase()==='HARI'?'selected':''}>Per Hari</option><option value="JAM" ${String(row.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'selected':''}>Per Jam</option></select></div>
+      <div style="display:flex;align-items:flex-end"><label class="checkline" style="margin:0"><input id="f_IS_FACILITY" type="checkbox" onchange="onAssetIsFacilityChange()"> Fasilitas Tambahan</label></div>
       <div id="f_facilityFeeWrap"><label>Biaya Tambahan Pemakaian Fasilitas (Rp)</label><input id="f_FACILITY_FEE" type="number" min="0" value="${escapeHtml(row.FACILITY_FEE||0)}"></div>
       <div><label>Dimensi</label><input id="f_DIMENSI" value="${escapeHtml(row.DIMENSI||'')}" placeholder="Contoh: 45x50x90 cm"></div>
       <div></div>
@@ -1509,16 +1528,15 @@ function assetForm(row){
       <div><div id="f_preview_barang" style="margin-top:4px"></div></div>
       <div class="form-full"><label>Keterangan</label><textarea id="f_DESCRIPTION">${escapeHtml(row.DESCRIPTION||'')}</textarea></div>
     </div>
-    <div class="hint" style="margin-top:6px">"Bisa Dipinjamkan" mengatur apakah aset ini muncul di menu Peminjaman Barang. "Fasilitas Tambahan" mengatur apakah aset ini bisa dipilih sebagai tambahan biaya saat booking ruangan/barang (contoh: AC, Sound System). Isi URL foto dengan link gambar yang sudah diunggah (mis. dari Google Drive/hosting gambar).</div>
-  `, [
+    <div class="hint" style="margin-top:6px">Admin menentukan tarif dan satuan tarif aset. Unit inventaris mengikuti konfigurasi aset induknya. Tamu dan pengguna biasa tidak dapat mengubah tarif atau satuan tarif.</div>
+  `,[
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveAssetForm('${row.ID||''}')">💾 Simpan</button>`
   ]);
-  // set type field initially and checkbox states
   setTimeout(function(){
     onAssetCategoryChange();
-    document.getElementById('f_IS_FACILITY').checked = (row.IS_FACILITY && String(row.IS_FACILITY).toUpperCase()==='TRUE');
-    document.getElementById('f_CAN_LEND').checked = (row.CAN_LEND && String(row.CAN_LEND).toUpperCase()==='TRUE');
+    document.getElementById('f_IS_FACILITY').checked=String(row.IS_FACILITY||'').toUpperCase()==='TRUE';
+    document.getElementById('f_CAN_LEND').checked=String(row.CAN_LEND||'').toUpperCase()==='TRUE';
     onAssetCanLendChange();
     onAssetIsFacilityChange();
     previewAssetPhoto('f_FOTO_NOTA_URL','f_preview_nota');
@@ -1547,46 +1565,66 @@ function onAssetIsFacilityChange(){
 async function saveAssetForm(id){
   try{
     requirePerm('asset.manage');
-    const data = {
-      CODE:getValue('f_CODE'), NAME:getValue('f_NAME'), CATEGORY_ID:getValue('f_CATEGORY_ID'),
-      BRAND:getValue('f_BRAND'), MODEL:getValue('f_MODEL'), SERIAL_NUMBER:getValue('f_SERIAL_NUMBER'),
-      ACQUISITION_YEAR:getValue('f_ACQUISITION_YEAR'), UNIT_PRICE:getValue('f_UNIT_PRICE'),
-      DESCRIPTION:getValue('f_DESCRIPTION'), ACTIVE:'TRUE',
-      SPESIFIKASI:getValue('f_SPESIFIKASI'), DIMENSI:getValue('f_DIMENSI'),
-      FOTO_NOTA_URL:getValue('f_FOTO_NOTA_URL'), FOTO_BARANG_URL:getValue('f_FOTO_BARANG_URL')
+    const data={
+      CODE:getValue('f_CODE'),
+      NAME:getValue('f_NAME'),
+      CATEGORY_ID:getValue('f_CATEGORY_ID'),
+      BRAND:getValue('f_BRAND'),
+      MODEL:getValue('f_MODEL'),
+      SERIAL_NUMBER:getValue('f_SERIAL_NUMBER'),
+      ACQUISITION_YEAR:getValue('f_ACQUISITION_YEAR'),
+      UNIT_PRICE:Number(getValue('f_UNIT_PRICE'))||0,
+      DESCRIPTION:getValue('f_DESCRIPTION'),
+      ACTIVE:'TRUE',
+      SPESIFIKASI:getValue('f_SPESIFIKASI'),
+      DIMENSI:getValue('f_DIMENSI'),
+      FOTO_NOTA_URL:getValue('f_FOTO_NOTA_URL'),
+      FOTO_BARANG_URL:getValue('f_FOTO_BARANG_URL'),
+      FACILITY_FEE:Number(getValue('f_FACILITY_FEE'))||0,
+      IS_FACILITY:document.getElementById('f_IS_FACILITY').checked?'TRUE':'FALSE',
+      CAN_LEND:document.getElementById('f_CAN_LEND').checked?'TRUE':'FALSE',
+      RENTAL_FEE:Number(getValue('f_RENTAL_FEE'))||0,
+      RENTAL_UNIT:String(getValue('f_RENTAL_UNIT')||'HARI').toUpperCase()==='JAM'?'JAM':'HARI'
     };
-    // assign TYPE from category
-    const cat = DB.ASSET_CATEGORIES.find(c=>c.ID===data.CATEGORY_ID);
-    data.TYPE = cat ? cat.TYPE : (data.TYPE||'ASET_TETAP');
-
-    // read new fields
-    data.FACILITY_FEE = Number(getValue('f_FACILITY_FEE'))||0;
-    data.IS_FACILITY = document.getElementById('f_IS_FACILITY').checked ? 'TRUE' : 'FALSE';
-    data.CAN_LEND = document.getElementById('f_CAN_LEND').checked ? 'TRUE' : 'FALSE';
-    data.RENTAL_FEE = Number(getValue('f_RENTAL_FEE'))||0;
-
-    if(!data.NAME){ showToast('Nama aset wajib diisi.','warning'); return; }
-
-    if(!data.CODE){
-      // auto-generate code if empty
-      DB.SEQ.ASSETS++;
-      data.CODE = 'AST-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSETS).padStart(5,'0');
+    const cat=DB.ASSET_CATEGORIES.find(c=>c.ID===data.CATEGORY_ID);
+    data.TYPE=cat?cat.TYPE:'ASET_TETAP';
+    if(!data.NAME){
+      showToast('Nama aset wajib diisi.','warning');
+      return;
     }
-
+    if(!data.CODE){
+      DB.SEQ.ASSETS++;
+      data.CODE='AST-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSETS).padStart(5,'0');
+    }
+    if(!data.CAN_LEND){
+      data.RENTAL_FEE=0;
+      data.RENTAL_UNIT='HARI';
+    }
     if(id){
-      const idx = DB.ASSETS.findIndex(x=>x.ID===id);
-      DB.ASSETS[idx] = Object.assign({},DB.ASSETS[idx],data);
-      await audit('UPDATE','ASSETS',id,'Update aset '+data.NAME);
+      const idx=DB.ASSETS.findIndex(x=>x.ID===id);
+      if(idx<0){
+        showToast('Aset tidak ditemukan.','error');
+        return;
+      }
+      DB.ASSETS[idx]=Object.assign({},DB.ASSETS[idx],data);
+      DB.ASSET_UNITS.filter(u=>u.ASSET_ID===id).forEach(function(u){
+        u.RENTAL_FEE=data.RENTAL_FEE;
+        u.RENTAL_UNIT=data.RENTAL_UNIT;
+      });
+      await audit('UPDATE','ASSETS',id,'Update aset '+data.NAME+' dengan tarif '+data.RENTAL_FEE+'/'+data.RENTAL_UNIT);
     }else{
-      data.ID = uid('AST'); data.CREATED_AT = nowStr();
+      data.ID=uid('AST');
+      data.CREATED_AT=nowStr();
       DB.ASSETS.push(data);
-      await audit('CREATE','ASSETS',data.ID,'Tambah aset '+data.NAME);
+      await audit('CREATE','ASSETS',data.ID,'Tambah aset '+data.NAME+' dengan tarif '+data.RENTAL_FEE+'/'+data.RENTAL_UNIT);
     }
     await saveDB();
     closeModal();
     showToast('Aset berhasil disimpan.','success');
     renderAssets();
-  }catch(error){ showToast(getErrorMessage(error),'error'); }
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 async function assetDelete(id){
   try{
@@ -1716,13 +1754,14 @@ async function processAssetImport(){
    ASSET UNITS
 ========================================================= */
 function renderAssetUnits(){
-  const content = document.getElementById('content');
-  const rows = DB.ASSET_UNITS;
-  STATE.tableCache.ASSET_UNITS = rows;
-  const canManage = hasPermission(STATE.currentUser,'asset_unit.manage');
-  content.innerHTML = `
+  const content=document.getElementById('content');
+  const rows=DB.ASSET_UNITS;
+  STATE.tableCache.ASSET_UNITS=rows;
+  const canManage=hasPermission(STATE.currentUser,'asset_unit.manage');
+
+  content.innerHTML=`
     <div class="page-title">🏷️ Unit Inventaris</div>
-    <div class="page-subtitle">Setiap barang fisik mempunyai identitas inventaris sendiri. Untuk barang baru dalam jumlah banyak pakai <b>⚡ Generate</b>, untuk data lama yang sudah punya nomor/lokasi masing-masing pakai <b>📥 Import</b>. Nomor inventaris juga berfungsi sebagai kode barcode/QR — klik 🔳 QR untuk melihat/mencetak stikernya.</div>
+    <div class="page-subtitle">Setiap barang fisik mempunyai identitas inventaris sendiri. Tarif dan satuan peminjaman mengikuti pengaturan aset induk dan hanya dapat diatur oleh admin melalui Master Aset.</div>
     <div class="card">
       <div class="toolbar">
         <div class="toolbar-left"><input id="unitSearch" class="search-box" placeholder="🔎 Cari inventaris..." oninput="filterAssetUnits()"></div>
@@ -1731,6 +1770,7 @@ function renderAssetUnits(){
       <div id="unitsTable"></div>
     </div>
   `;
+
   renderAssetUnitTable(rows,canManage);
 }
 function filterAssetUnits(){
@@ -1742,21 +1782,29 @@ function filterAssetUnits(){
   renderAssetUnitTable(rows,hasPermission(STATE.currentUser,'asset_unit.manage'));
 }
 function renderAssetUnitTable(rows,canManage){
-  document.getElementById('unitsTable').innerHTML = renderTableHtml(rows,
-    [['INVENTORY_NUMBER','No. Inventaris / Barcode'],['ASSET_ID','Aset'],['CONDITION_ID','Kondisi'],['BUILDING_ID','Gedung'],['ROOM_ID','Ruangan'],['STATUS','Status']],
+  document.getElementById('unitsTable').innerHTML=renderTableHtml(
+    rows,
+    [['INVENTORY_NUMBER','No. Inventaris / Barcode'],['ASSET_ID','Aset'],['RENTAL_FEE','Tarif'],['RENTAL_UNIT','Satuan'],['CONDITION_ID','Kondisi'],['BUILDING_ID','Gedung'],['ROOM_ID','Ruangan'],['STATUS','Status']],
     function(row){
-      const qrBtn = `<button class="btn btn-light btn-sm" onclick="showUnitQr('${row.ID}')" title="Lihat / cetak QR">🔳 QR</button>`;
-      if(!canManage) return qrBtn;
-      return `${qrBtn}
-        <button class="btn btn-light btn-sm" onclick='assetUnitForm(${safeJson(row)})'>✏️</button>
-        <button class="btn btn-danger btn-sm" onclick="assetUnitDelete('${row.ID}')">🗑️</button>`;
-    });
+      const asset=DB.ASSETS.find(a=>a.ID===row.ASSET_ID);
+      const rentalFee=asset?Number(asset.RENTAL_FEE)||0:Number(row.RENTAL_FEE)||0;
+      const rentalUnit=asset?String(asset.RENTAL_UNIT||'HARI').toUpperCase():String(row.RENTAL_UNIT||'HARI').toUpperCase();
+      const qrBtn=`<button class="btn btn-light btn-sm" onclick="showUnitQr('${row.ID}')" title="Lihat / cetak QR">🔳 QR</button>`;
+      const rate=`<span>${escapeHtml(formatCurrency(rentalFee))}/${rentalUnit==='JAM'?'jam':'hari'}</span>`;
+      if(!canManage)return rate+' '+qrBtn;
+      return rate+' '+qrBtn+` <button class="btn btn-light btn-sm" onclick='assetUnitForm(${safeJson(row)})'>✏️</button><button class="btn btn-danger btn-sm" onclick="assetUnitDelete('${row.ID}')">🗑️</button>`;
+    }
+  );
 }
 function assetUnitForm(row){
-  row = row || {};
-  openModal(row.ID?'Edit Unit Inventaris':'Tambah Unit Inventaris', `
+  row=row||{};
+  const asset=DB.ASSETS.find(a=>a.ID===row.ASSET_ID);
+  const rentalFee=asset?Number(asset.RENTAL_FEE)||0:Number(row.RENTAL_FEE)||0;
+  const rentalUnit=asset?String(asset.RENTAL_UNIT||'HARI').toUpperCase():String(row.RENTAL_UNIT||'HARI').toUpperCase();
+
+  openModal(row.ID?'Edit Unit Inventaris':'Tambah Unit Inventaris',`
     <div class="form-grid">
-      <div class="form-full"><label>Aset *</label><select id="u_ASSET_ID">${selectOptions(DB.ASSETS,'ID','NAME',row.ASSET_ID,true)}</select></div>
+      <div class="form-full"><label>Aset *</label><select id="u_ASSET_ID" onchange="updateAssetUnitRateInfo()">${selectOptions(DB.ASSETS,'ID','NAME',row.ASSET_ID,true)}</select></div>
       <div><label>No. Inventaris (Barcode)</label><input id="u_INVENTORY_NUMBER" value="${escapeHtml(row.INVENTORY_NUMBER||'')}" placeholder="Biarkan kosong untuk auto-generate"></div>
       <div><label>Kondisi</label><select id="u_CONDITION_ID">${selectOptions(DB.ASSET_CONDITIONS,'ID','NAME',row.CONDITION_ID,true)}</select></div>
       <div><label>Gedung</label><select id="u_BUILDING_ID" onchange="onUnitBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',row.BUILDING_ID,true)}</select></div>
@@ -1767,12 +1815,30 @@ function assetUnitForm(row){
         <option value="DIPINJAM" ${row.STATUS==='DIPINJAM'?'selected':''}>Dipinjam</option>
         <option value="RUSAK" ${row.STATUS==='RUSAK'?'selected':''}>Rusak</option>
       </select></div>
+      <div><label>Tarif Peminjaman</label><input id="u_RENTAL_FEE" type="number" value="${rentalFee}" readonly></div>
+      <div><label>Satuan Tarif</label><input id="u_RENTAL_UNIT" value="${rentalUnit==='JAM'?'Per Jam':'Per Hari'}" readonly></div>
+      <div class="form-full"><div id="u_rate_hint" class="hint"></div></div>
       <div class="form-full"><label>Catatan</label><textarea id="u_NOTE">${escapeHtml(row.NOTE||'')}</textarea></div>
     </div>
-  `, [
+  `,[
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveAssetUnitForm('${row.ID||''}')">💾 Simpan</button>`
   ]);
+
+  setTimeout(updateAssetUnitRateInfo,30);
+}
+function updateAssetUnitRateInfo(){
+  const assetId=getValue('u_ASSET_ID');
+  const asset=DB.ASSETS.find(a=>a.ID===assetId);
+  const fee=asset?Number(asset.RENTAL_FEE)||0:0;
+  const unit=asset&&String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+  const feeInput=document.getElementById('u_RENTAL_FEE');
+  const unitInput=document.getElementById('u_RENTAL_UNIT');
+  const hint=document.getElementById('u_rate_hint');
+
+  if(feeInput)feeInput.value=fee;
+  if(unitInput)unitInput.value=unit==='JAM'?'Per Jam':'Per Hari';
+  if(hint)hint.innerHTML=asset?'Tarif unit mengikuti aset <b>'+escapeHtml(asset.NAME)+'</b>: <b>'+escapeHtml(formatCurrency(fee))+'</b> per <b>'+(unit==='JAM'?'jam':'hari')+'</b>. Pengaturan ini hanya dapat diubah melalui Master Aset oleh admin.':'Pilih aset untuk melihat tarif.';
 }
 function roomOptionsForBuilding(buildingId,selected){
   const rooms = buildingId ? DB.ROOMS.filter(r=>r.BUILDING_ID===buildingId) : DB.ROOMS;
@@ -1785,30 +1851,59 @@ function onUnitBuildingChange(){
 async function saveAssetUnitForm(id){
   try{
     requirePerm('asset_unit.manage');
-    const data = {
-      ASSET_ID:getValue('u_ASSET_ID'), INVENTORY_NUMBER:getValue('u_INVENTORY_NUMBER'),
-      CONDITION_ID:getValue('u_CONDITION_ID'), BUILDING_ID:getValue('u_BUILDING_ID'),
-      ROOM_ID:getValue('u_ROOM_ID'), STATUS:getValue('u_STATUS'), NOTE:getValue('u_NOTE')
+    const assetId=getValue('u_ASSET_ID');
+    const asset=DB.ASSETS.find(a=>a.ID===assetId);
+
+    if(!asset){
+      showToast('Aset wajib dipilih.','warning');
+      return;
+    }
+
+    const data={
+      ASSET_ID:assetId,
+      INVENTORY_NUMBER:getValue('u_INVENTORY_NUMBER'),
+      CONDITION_ID:getValue('u_CONDITION_ID'),
+      BUILDING_ID:getValue('u_BUILDING_ID'),
+      ROOM_ID:getValue('u_ROOM_ID'),
+      STATUS:getValue('u_STATUS'),
+      NOTE:getValue('u_NOTE'),
+      RENTAL_FEE:Number(asset.RENTAL_FEE)||0,
+      RENTAL_UNIT:String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI'
     };
-    if(!data.ASSET_ID){ showToast('Aset wajib diisi.','warning'); return; }
+
     if(!data.INVENTORY_NUMBER){
       DB.SEQ.ASSET_UNITS++;
-      data.INVENTORY_NUMBER = 'INV-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSET_UNITS).padStart(5,'0');
+      data.INVENTORY_NUMBER='INV-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSET_UNITS).padStart(5,'0');
     }
+
+    const duplicate=DB.ASSET_UNITS.some(x=>x.INVENTORY_NUMBER===data.INVENTORY_NUMBER&&x.ID!==id);
+    if(duplicate){
+      showToast('Nomor inventaris sudah digunakan.','warning');
+      return;
+    }
+
     if(id){
-      const idx = DB.ASSET_UNITS.findIndex(x=>x.ID===id);
-      DB.ASSET_UNITS[idx] = Object.assign({},DB.ASSET_UNITS[idx],data);
-      await audit('UPDATE','ASSET_UNITS',id,'Update unit '+data.INVENTORY_NUMBER);
+      const idx=DB.ASSET_UNITS.findIndex(x=>x.ID===id);
+      if(idx<0){
+        showToast('Unit inventaris tidak ditemukan.','error');
+        return;
+      }
+      DB.ASSET_UNITS[idx]=Object.assign({},DB.ASSET_UNITS[idx],data);
+      await audit('UPDATE','ASSET_UNITS',id,'Update unit '+data.INVENTORY_NUMBER+' dengan tarif '+data.RENTAL_FEE+'/'+data.RENTAL_UNIT);
     }else{
-      data.ID = uid('AUN'); data.CREATED_AT = nowStr();
+      data.ID=uid('AUN');
+      data.CREATED_AT=nowStr();
       DB.ASSET_UNITS.push(data);
-      await audit('CREATE','ASSET_UNITS',data.ID,'Tambah unit '+data.INVENTORY_NUMBER);
+      await audit('CREATE','ASSET_UNITS',data.ID,'Tambah unit '+data.INVENTORY_NUMBER+' dengan tarif '+data.RENTAL_FEE+'/'+data.RENTAL_UNIT);
     }
+
     await saveDB();
     closeModal();
     showToast('Unit inventaris berhasil disimpan.','success');
     renderAssetUnits();
-  }catch(error){ showToast(getErrorMessage(error),'error'); }
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 async function assetUnitDelete(id){
   try{
@@ -1848,31 +1943,58 @@ function onGenerateBuildingChange(){
 async function processGenerateUnits(){
   try{
     requirePerm('asset_unit.manage');
-    const assetId = getValue('g_ASSET_ID');
-    const qty = Number(getValue('g_QTY'))||0;
-    if(!assetId){ showToast('Pilih aset terlebih dahulu.','warning'); return; }
-    if(qty<1 || qty>1000){ showToast('Jumlah unit harus antara 1-1000.','warning'); return; }
-    const conditionId = getValue('g_CONDITION_ID');
-    const buildingId = getValue('g_BUILDING_ID');
-    const roomId = getValue('g_ROOM_ID');
-    const asset = DB.ASSETS.find(a=>a.ID===assetId);
+    const assetId=getValue('g_ASSET_ID');
+    const qty=Number(getValue('g_QTY'))||0;
+
+    if(!assetId){
+      showToast('Pilih aset terlebih dahulu.','warning');
+      return;
+    }
+
+    if(qty<1||qty>1000){
+      showToast('Jumlah unit harus antara 1-1000.','warning');
+      return;
+    }
+
+    const conditionId=getValue('g_CONDITION_ID');
+    const buildingId=getValue('g_BUILDING_ID');
+    const roomId=getValue('g_ROOM_ID');
+    const asset=DB.ASSETS.find(a=>a.ID===assetId);
+
+    if(!asset){
+      showToast('Aset tidak ditemukan.','error');
+      return;
+    }
+
+    const rentalFee=Number(asset.RENTAL_FEE)||0;
+    const rentalUnit=String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+
     for(let i=0;i<qty;i++){
       DB.SEQ.ASSET_UNITS++;
       DB.ASSET_UNITS.push({
-        ID:uid('AUN'), ASSET_ID:assetId,
+        ID:uid('AUN'),
+        ASSET_ID:assetId,
         INVENTORY_NUMBER:'INV-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSET_UNITS).padStart(5,'0'),
-        CONDITION_ID:conditionId, BUILDING_ID:buildingId, ROOM_ID:roomId, STATUS:'TERSEDIA', NOTE:'',
+        CONDITION_ID:conditionId,
+        BUILDING_ID:buildingId,
+        ROOM_ID:roomId,
+        STATUS:'TERSEDIA',
+        NOTE:'',
+        RENTAL_FEE:rentalFee,
+        RENTAL_UNIT:rentalUnit,
         CREATED_AT:nowStr()
       });
     }
-    await audit('GENERATE','ASSET_UNITS','-','Generate '+qty+' unit untuk '+(asset?asset.NAME:assetId));
+
+    await audit('CREATE','ASSET_UNITS','-','Generate '+qty+' unit '+asset.NAME+' dengan tarif '+rentalFee+'/'+rentalUnit);
     await saveDB();
     closeModal();
-    showToast(qty+' unit inventaris berhasil dibuat.','success');
+    showToast(qty+' unit berhasil dibuat.','success');
     renderAssetUnits();
-  }catch(error){ showToast(getErrorMessage(error),'error'); }
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
-
 /* =========================================================
    IMPORT UNIT INVENTARIS (Excel)
 ========================================================= */
@@ -2759,7 +2881,6 @@ function renderGuestAssetForm(){
       <div><label>Tanggal Selesai *</label><input id="ga_END_DATE" type="date" min="${todayStr()}" onchange="renderGuestCart()"></div>
       <div><label>Jam Mulai *</label><input id="ga_START_TIME" type="time" onchange="renderGuestCart()"></div>
       <div><label>Jam Selesai *</label><input id="ga_END_TIME" type="time" onchange="renderGuestCart()"></div>
-      <div><label>Satuan Tarif *</label><select id="ga_UNIT" onchange="renderGuestCart()"><option value="HARI">Hari</option><option value="JAM">Jam</option></select></div>
     </div>
     <div class="form-group" style="margin-top:10px">
       <label>Pilih Barang</label>
@@ -2768,6 +2889,7 @@ function renderGuestAssetForm(){
         <input id="ga_ASSET_QTY" type="number" min="1" value="1" style="width:80px">
         <button type="button" class="btn btn-light" onclick="addGuestAssetToCart()">+ Tambah</button>
       </div>
+      <div class="hint">Tarif dan satuan tarif ditentukan oleh admin pada Master Aset dan tidak dapat diubah oleh tamu.</div>
     </div>
     <div id="ga_cart_list" style="margin:10px 0"></div>
     ${facAssets.length?`<div class="form-group">
@@ -2803,43 +2925,47 @@ function renderGuestCart(){
   const endDate=getValue('ga_END_DATE');
   const startTime=getValue('ga_START_TIME');
   const endTime=getValue('ga_END_TIME');
-  const unit=getValue('ga_UNIT')||'HARI';
-  const duration=calculateBookingDuration(startDate,endDate,startTime,endTime);
   const facTotal=Array.from(document.querySelectorAll('.ga_fac_chk:checked')).reduce((s,x)=>s+(Number(x.dataset.fee)||0),0);
 
   if(!STATE.guestCart.length){
-    el.innerHTML='<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>'+(facTotal?'<div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">Biaya fasilitas tambahan: <b>'+escapeHtml(formatCurrency(facTotal))+'</b></div>':'');
+    el.innerHTML='<div class="empty-state" style="padding:16px"><div class="e-icon">🛒</div>Belum ada barang dipilih.</div>';
     return;
   }
 
-  const itemsSubtotal=STATE.guestCart.reduce((s,c)=>{
-    const durationQty=unit==='HARI'?duration.days:duration.hours;
-    return s+(c.QTY*c.FEE_PER_UNIT*durationQty);
-  },0);
+  const validDuration=!!(startDate&&endDate&&startTime&&endTime);
+  const duration=validDuration?calculateBookingDuration(startDate,endDate,startTime,endTime):{days:0,hours:0};
+
+  let itemsSubtotal=0;
+
+  const rows=STATE.guestCart.map(c=>{
+    const asset=DB.ASSETS.find(a=>a.ID===c.ASSET_ID);
+    const rate=asset?Number(asset.RENTAL_FEE)||0:Number(c.FEE_PER_UNIT)||0;
+    const rateUnit=asset&&String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+    const durationQty=rateUnit==='HARI'?duration.days:duration.hours;
+    const subtotal=validDuration?c.QTY*rate*durationQty:0;
+
+    itemsSubtotal+=subtotal;
+
+    return `<tr>
+      <td>${escapeHtml(c.ASSET_NAME)}</td>
+      <td>${c.QTY}</td>
+      <td>${escapeHtml(formatCurrency(rate))}</td>
+      <td>${rateUnit==='HARI'?'Hari':'Jam'}</td>
+      <td>${validDuration?durationQty:'-'}</td>
+      <td>${escapeHtml(formatCurrency(subtotal))}</td>
+      <td><button type="button" class="btn btn-danger btn-sm" onclick="removeGuestAssetFromCart('${c.ASSET_ID}')">🗑️</button></td>
+    </tr>`;
+  }).join('');
 
   el.innerHTML=`
     <div class="table-wrapper">
       <table>
         <thead><tr><th>Barang</th><th>Jumlah</th><th>Tarif</th><th>Satuan</th><th>Durasi</th><th>Subtotal</th><th></th></tr></thead>
-        <tbody>
-          ${STATE.guestCart.map(c=>{
-            const durationQty=unit==='HARI'?duration.days:duration.hours;
-            const subtotal=c.QTY*c.FEE_PER_UNIT*durationQty;
-            return `<tr>
-              <td>${escapeHtml(c.ASSET_NAME)}</td>
-              <td>${c.QTY}</td>
-              <td>${escapeHtml(formatCurrency(c.FEE_PER_UNIT))}</td>
-              <td>${unit==='HARI'?'Hari':'Jam'}</td>
-              <td>${durationQty}</td>
-              <td>${escapeHtml(formatCurrency(subtotal))}</td>
-              <td><button type="button" class="btn btn-danger btn-sm" onclick="removeGuestAssetFromCart('${c.ASSET_ID}')">🗑️</button></td>
-            </tr>`;
-          }).join('')}
-        </tbody>
+        <tbody>${rows}</tbody>
       </table>
     </div>
     <div style="margin-top:8px;font-size:13px;color:#4B5468;text-align:right">
-      Durasi: <b>${duration.days} hari</b> / <b>${duration.hours} jam</b><br>
+      ${validDuration?'Durasi umum: <b>'+duration.days+' hari</b> / <b>'+duration.hours+' jam</b><br>':''}
       Total barang: <b>${escapeHtml(formatCurrency(itemsSubtotal))}</b>
       ${facTotal?' · Fasilitas: <b>'+escapeHtml(formatCurrency(facTotal))+'</b>':''}
       <br>Total estimasi biaya: <b>${escapeHtml(formatCurrency(itemsSubtotal+facTotal))}</b>
@@ -2865,7 +2991,6 @@ async function submitGuestBooking(){
       const endDate=getValue('gr_END_DATE');
       const start=getValue('gr_START_TIME');
       const end=getValue('gr_END_TIME');
-      const unit=getValue('gr_UNIT')||'HARI';
       const purpose=getValue('gr_PURPOSE');
 
       if(!itemId||!date||!endDate||!start||!end||!purpose){
@@ -2882,6 +3007,7 @@ async function submitGuestBooking(){
       }
 
       const room=DB.ROOMS.find(r=>r.ID===itemId);
+
       if(!room){
         showToast('Ruangan tidak ditemukan.','error');
         return;
@@ -2889,11 +3015,9 @@ async function submitGuestBooking(){
 
       const conflict=DB.BOOKINGS.some(b=>{
         if(b.TYPE!=='ROOM'||b.ITEM_ID!==itemId)return false;
-        if(!['MENUNGGU','DISETUJUI'].includes(b.STATUS))return false;
-
+        if(!['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS))return false;
         const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
         const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
-
         return startDateTime<bEnd&&endDateTime>bStart;
       });
 
@@ -2903,7 +3027,7 @@ async function submitGuestBooking(){
       }
 
       const baseRate=Number(room.RENTAL_FEE)||Number(DB.APP_SETTINGS.DEFAULT_BASE_FEE)||0;
-      const calculation=calculateBookingFee(baseRate,unit,date,endDate,start,end);
+      const calculation=calculateBookingFee(baseRate,'HARI',date,endDate,start,end);
       const facilityChecks=Array.from(document.querySelectorAll('.gr_fac_chk:checked')).map(x=>x.value);
       let facilityFeeSum=0;
       let facilityList=[];
@@ -2932,7 +3056,7 @@ async function submitGuestBooking(){
         END_TIME:end,
         DURATION_DAYS:calculation.days,
         DURATION_HOURS:calculation.hours,
-        RATE_UNIT:unit,
+        RATE_UNIT:'HARI',
         RATE:baseRate,
         PURPOSE:purpose,
         BASE_FEE:calculation.total,
@@ -2953,7 +3077,6 @@ async function submitGuestBooking(){
       const endDate=getValue('ga_END_DATE');
       const start=getValue('ga_START_TIME');
       const end=getValue('ga_END_TIME');
-      const unit=getValue('ga_UNIT')||'HARI';
       const purpose=getValue('ga_PURPOSE');
 
       if(!date||!endDate||!start||!end||!purpose){
@@ -2995,18 +3118,28 @@ async function submitGuestBooking(){
         }
       }
 
-      const items=STATE.guestCart.map(c=>({
-        ASSET_ID:c.ASSET_ID,
-        ASSET_NAME:c.ASSET_NAME,
-        QTY:c.QTY,
-        FEE_PER_UNIT:c.FEE_PER_UNIT,
-        ISSUED_UNIT_IDS:[],
-        RETURNED_UNIT_IDS:[]
-      }));
+      const items=STATE.guestCart.map(c=>{
+        const asset=DB.ASSETS.find(a=>a.ID===c.ASSET_ID);
+        const rate=asset?Number(asset.RENTAL_FEE)||0:Number(c.FEE_PER_UNIT)||0;
+        const rateUnit=asset&&String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
 
-      const durationQty=unit==='HARI'?duration.days:duration.hours;
-      const itemsSubtotal=items.reduce((s,i)=>s+(i.QTY*i.FEE_PER_UNIT*durationQty),0);
+        return{
+          ASSET_ID:c.ASSET_ID,
+          ASSET_NAME:c.ASSET_NAME,
+          QTY:c.QTY,
+          FEE_PER_UNIT:rate,
+          RATE_UNIT:rateUnit,
+          ISSUED_UNIT_IDS:[],
+          RETURNED_UNIT_IDS:[]
+        };
+      });
+
       const itemName=items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
+      const itemsSubtotal=items.reduce((sum,item)=>{
+        const qty=item.RATE_UNIT==='HARI'?duration.days:duration.hours;
+        return sum+(item.QTY*item.FEE_PER_UNIT*qty);
+      },0);
+
       const facilityChecks=Array.from(document.querySelectorAll('.ga_fac_chk:checked')).map(x=>x.value);
       let facilityFeeSum=0;
       let facilityList=[];
@@ -3035,7 +3168,7 @@ async function submitGuestBooking(){
         END_TIME:end,
         DURATION_DAYS:duration.days,
         DURATION_HOURS:duration.hours,
-        RATE_UNIT:unit,
+        RATE_UNIT:'MIXED',
         RATE:0,
         PURPOSE:purpose,
         ITEMS:items,
