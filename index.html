@@ -350,23 +350,23 @@ let FIREBASE_READY = false;
 let LAST_SYNCED_JSON = null; // untuk mendeteksi echo dari tulisan sendiri saat realtime listener aktif
 
 async function setupFirebase(){
-  try{
-    if(typeof firebase === 'undefined'){
-      console.warn('SDK Firebase tidak termuat (offline/diblokir jaringan). Memakai penyimpanan lokal.');
-      return;
-    }
-    firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
-    firebaseDb = firebase.firestore();
-    // Anonymous auth diperlukan supaya lolos Firestore Security Rules (request.auth != null)
-    await Promise.race([
-      firebase.auth().signInAnonymously(),
-      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firebase auth timeout')),8000))
-    ]);
-    FIREBASE_READY = true;
-  }catch(error){
-    console.warn('Gagal terhubung ke Firebase, memakai penyimpanan lokal sebagai cadangan:',error);
-    FIREBASE_READY = false;
-  }
+try{
+if(typeof firebase==='undefined'){
+console.warn('SDK Firebase tidak termuat. Memakai penyimpanan lokal.');
+return;
+}
+firebaseApp=firebase.initializeApp(FIREBASE_CONFIG);
+firebaseDb=firebase.firestore();
+firebaseDb.settings({experimentalForceLongPolling:true});
+await Promise.race([
+firebase.auth().signInAnonymously(),
+new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firebase auth timeout')),8000))
+]);
+FIREBASE_READY=true;
+}catch(error){
+console.warn('Gagal terhubung ke Firebase, memakai penyimpanan lokal sebagai cadangan:',error);
+FIREBASE_READY=false;
+}
 }
 function startFirebaseSync(){
   if(!FIREBASE_READY || !firebaseDb) return;
