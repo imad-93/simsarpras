@@ -1572,30 +1572,26 @@ function renderCustomReportDetail(rows){
     </div>
   `;
 }
+
 function exportCustomReportExcel(){
   try{
     requirePerm('report.view');
     const data=getCustomReportData();
-
     if(!data.filters.startDate||!data.filters.endDate){
       showToast('Tanggal mulai dan tanggal selesai wajib diisi.','warning');
       return;
     }
-
     if(data.filters.endDate<data.filters.startDate){
       showToast('Tanggal selesai tidak boleh lebih kecil dari tanggal mulai.','warning');
       return;
     }
-
     if(!data.rows.length){
       showToast('Tidak ada data untuk diexport.','warning');
       return;
     }
-
     const getGuestStatus=function(b){
       return String(b.IS_GUEST||'').toUpperCase()==='TRUE'||String(b.USER_NAME||'').toUpperCase().includes('(TAMU)');
     };
-
     const detail=data.rows.map(function(b){
       return{
         'Tanggal':getCustomReportDate(b),
@@ -1622,7 +1618,6 @@ function exportCustomReportExcel(){
         'Dibuat':b.CREATED_AT||''
       };
     });
-
     const daily=data.daily.map(function(r){
       return{
         'Tanggal':r.PERIODE,
@@ -1634,7 +1629,6 @@ function exportCustomReportExcel(){
         'Total Biaya':r.BIAYA
       };
     });
-
     const monthly=data.monthly.map(function(r){
       return{
         'Bulan':r.PERIODE,
@@ -1646,7 +1640,6 @@ function exportCustomReportExcel(){
         'Total Biaya':r.BIAYA
       };
     });
-
     const yearly=data.yearly.map(function(r){
       return{
         'Tahun':r.PERIODE,
@@ -1658,12 +1651,10 @@ function exportCustomReportExcel(){
         'Total Biaya':r.BIAYA
       };
     });
-
     const totalGuest=data.rows.filter(getGuestStatus).length;
     const totalInternal=data.rows.length-totalGuest;
     const totalRoom=data.rows.filter(b=>b.TYPE==='ROOM').length;
     const totalAsset=data.rows.filter(b=>b.TYPE==='ASSET').length;
-
     const summary=[{
       'Tanggal Mulai':data.filters.startDate,
       'Tanggal Selesai':data.filters.endDate,
@@ -1677,27 +1668,24 @@ function exportCustomReportExcel(){
       'Total Internal':totalInternal,
       'Total Biaya':data.totalFee
     }];
-
     const workbookSheets=[
-      {name:'Ringkasan',rows:summary},
       {name:'Detail Transaksi',rows:detail},
       {name:'Rekap Harian',rows:daily},
       {name:'Rekap Bulanan',rows:monthly},
       {name:'Rekap Tahunan',rows:yearly}
     ];
-
     downloadExcelWorkbook(
       summary,
       'Ringkasan',
       'Laporan_Custom_'+data.filters.startDate+'_'+data.filters.endDate+'.xlsx',
       workbookSheets
     );
-
     showToast('Laporan Excel berhasil dibuat dengan rekap Tamu dan Internal.','success');
   }catch(error){
     showToast(getErrorMessage(error),'error');
   }
 }
+
 /* =========================================================
    AUTH
 ========================================================= */
