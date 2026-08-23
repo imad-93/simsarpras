@@ -818,7 +818,7 @@ function migrateDB(){
       unit.RENTAL_UNIT=String(unit.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
     }
   });
-
+  migrateReportSettings();
   const allPermCodes=PERMISSIONS.map(p=>p[0]);
   (DB.ROLES||[]).forEach(function(role){
     if(!Array.isArray(role.PERMS))role.PERMS=[];
@@ -840,6 +840,476 @@ async function saveDB(){
 async function resetDemoData(){
   DB = await buildDefaultDB();
   await saveDB();
+}
+function migrateReportSettings(){
+  if(!DB.APP_SETTINGS) DB.APP_SETTINGS={};
+  if(!DB.APP_SETTINGS.REPORT_CONFIG) DB.APP_SETTINGS.REPORT_CONFIG={
+    TITLE:'Laporan Eksekusi Sistem',
+    DEFAULT_PERIOD:'BULANAN',
+    DEFAULT_MODULE:'SEMUA',
+    DEFAULT_STATUS:'SEMUA',
+    SHOW_SUMMARY:'TRUE',
+    SHOW_USER_SUMMARY:'TRUE',
+    SHOW_GUEST_SUMMARY:'TRUE',
+    SHOW_COST:'TRUE',
+    COLUMNS:['WAKTU','MODUL','JENIS','ID','PENGGUNA','ITEM','STATUS','BIAYA']
+  };
+}
+function renderExecutionReports(){
+  migrateReportSettings();
+  const content=document.getElementById('content');
+  const cfg=DB.APP_SETTINGS.REPORT_CONFIG;
+  const canManage=hasPermission(STATE.currentUser,'setting.manage');
+  content.innerHTML=`
+    <div class="page-title">📊 ${escapeHtml(cfg.TITLE||'Laporan Eksekusi Sistem')}</div>
+    <div class="page-subtitle">Laporan seluruh aktivitas dan transaksi sistem berdasarkan periode harian, bulanan, tahunan, atau rentang tanggal custom.</div>
+    <div class="card">
+      <div class="form-grid">
+        <div>
+          <label>Periode</label>
+          <select id="rep_PERIOD" onchange="onExecutionReportPeriodChange()">
+            <option value="HARIAN">Harian</option>
+            <option value="BULANAN">Bulanan</option>
+            <option value="TAHUNAN">Tahunan</option>
+            <option value="CUSTOM">Custom</option>
+          </select>
+        </div>
+        <div>
+          <label>Modul</label>
+          <select id="rep_MODULE">
+            <option value="SEMUA">Semua Modul</option>
+            <option value="BOOKING_ROOM">Booking Ruangan</option>
+            <option value="BOOKING_ASSET">Peminjaman Barang</option>
+            <option value="CHECKOUT">Checkout / Pengembalian</option>
+            <option value="REPORT">Laporan Sarpras</option>
+            <option value="MAINTENANCE">Maintenance</option>
+            <option value="STOCK_TAKE">Stock Take</option>
+            <option value="ASSET">Aset</option>
+            <option value="ASSET_UNIT">Unit Inventaris</option>
+            <option value="AUDIT">Audit / Aktivitas Pengguna</option>
+          </select>
+        </div>
+        <div>
+          <label>Status</label>
+          <select id="rep_STATUS">
+            <option value="SEMUA">Semua Status</option>
+            <option value="MENUNGGU">Menunggu</option>
+            <option value="DISETUJUI">Disetujui</option>
+            <option value="DIAMBIL">Diambil</option>
+            <option value="SELESAI">Selesai</option>
+            <option value="DITOLAK">Ditolak</option>
+            <option value="DIBATALKAN">Dibatalkan</option>
+            <option value="DIPROSES">Diproses</option>
+            <option value="DITUTUP">Ditutup</option>
+            <option value="TERJADWAL">Terjadwal</option>
+          </select>
+        </div>
+        <div>
+          <label>Tanggal</label>
+          <input id="rep_DATE" type="date" value="${todayStr()}">
+        </div>
+        <div id="rep_MONTH_WRAP">
+          <label>Bulan</label>
+          <input id="rep_MONTH" type="month" value="${todayStr().substring(0,7)}">
+        </div>
+        <div id="rep_YEAR_WRAP">
+          <label>Tahun</label>
+          <input id="rep_YEAR" type="number" min="2000" max="2100" value="${new Date().getFullYear()}">
+        </div>
+        <div id="rep_START_WRAP" style="display:none">
+          <label>Tanggal Mulai</label>
+          <input id="rep_START" type="date">
+        </div>
+        <div id="rep_END_WRAP" style="display:none">
+          <label>Tanggal Selesai</label>
+          <input id="rep_END" type="date">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="generateExecutionReport()">🔎 Tampilkan Laporan</button>
+        <button class="btn btn-light" onclick="exportExecutionReportExcel()">📥 Export Excel</button>
+        ${canManage?'<button class="btn btn-light" onclick="openReportSettings()">⚙️ Pengaturan Laporan</button>':''}
+      </div>
+    </div>
+    <div id="executionReportResult"></div>
+  `;
+  document.getElementById('rep_PERIOD').value=cfg.DEFAULT_PERIOD||'BULANAN';
+  document.getElementById('rep_MODULE').value=cfg.DEFAULT_MODULE||'SEMUA';
+  document.getElementById('rep_STATUS').value=cfg.DEFAULT_STATUS||'SEMUA';
+  onExecutionReportPeriodChange();
+  generateExecutionReport();
+}
+function onExecutionReportPeriodChange(){
+  const period=getValue('rep_PERIOD')||'BULANAN';
+  const monthWrap=document.getElementById('rep_MONTH_WRAP');
+  const yearWrap=document.getElementById('rep_YEAR_WRAP');
+  const startWrap=document.getElementById('rep_START_WRAP');
+  const endWrap=document.getElementById('rep_END_WRAP');
+  if(!monthWrap||!yearWrap||!startWrap||!endWrap)return;
+  monthWrap.style.display=period==='BULANAN'?'':'none';
+  yearWrap.style.display=period==='TAHUNAN'?'':'none';
+  startWrap.style.display=period==='CUSTOM'?'':'none';
+  endWrap.style.display=period==='CUSTOM'?'':'none';
+}
+function getExecutionReportRange(){
+  const period=getValue('rep_PERIOD')||'BULANAN';
+  const today=todayStr();
+  if(period==='HARIAN'){
+    const date=getValue('rep_DATE')||today;
+    return {start:date,end:date,label:'Harian '+date};
+  }
+  if(period==='BULANAN'){
+    const month=getValue('rep_MONTH')||today.substring(0,7);
+    const parts=month.split('-');
+    const year=Number(parts[0]);
+    const m=Number(parts[1]);
+    const last=new Date(year,m,0).getDate();
+    return {start:month+'-01',end:month+'-'+String(last).padStart(2,'0'),label:'Bulanan '+month};
+  }
+  if(period==='TAHUNAN'){
+    const year=Number(getValue('rep_YEAR'))||new Date().getFullYear();
+    return {start:year+'-01-01',end:year+'-12-31',label:'Tahunan '+year};
+  }
+  const start=getValue('rep_START');
+  const end=getValue('rep_END');
+  return {start:start,end:end,label:'Custom '+start+' s/d '+end};
+}
+function getExecutionReportRows(){
+  const range=getExecutionReportRange();
+  if(!range.start||!range.end||range.start>range.end)return [];
+  const module=getValue('rep_MODULE')||'SEMUA';
+  const status=getValue('rep_STATUS')||'SEMUA';
+  const rows=[];
+
+  DB.BOOKINGS.forEach(b=>{
+    const date=String(b.CREATED_AT||b.DATE||'').substring(0,10);
+    if(date<range.start||date>range.end)return;
+    if(module!=='SEMUA'&&module!=='BOOKING_ROOM'&&module!=='BOOKING_ASSET')return;
+    if(module==='BOOKING_ROOM'&&b.TYPE!=='ROOM')return;
+    if(module==='BOOKING_ASSET'&&b.TYPE!=='ASSET')return;
+    if(status!=='SEMUA'&&String(b.STATUS)!==status)return;
+    rows.push({
+      WAKTU:b.CREATED_AT||b.DATE||'',
+      MODUL:b.TYPE==='ROOM'?'BOOKING_ROOM':'BOOKING_ASSET',
+      JENIS:b.TYPE==='ROOM'?'Booking Ruangan':'Peminjaman Barang',
+      ID:b.ID,
+      PENGGUNA:b.USER_NAME||'-',
+      ITEM:b.ITEM_NAME||'-',
+      STATUS:b.STATUS||'-',
+      BIAYA:Number(b.TOTAL_FEE)||0,
+      IS_GUEST:b.IS_GUEST||'FALSE'
+    });
+  });
+
+  DB.REPORTS.forEach(r=>{
+    const date=String(r.CREATED_AT||r.DATE||'').substring(0,10);
+    if(date<range.start||date>range.end)return;
+    if(module!=='SEMUA'&&module!=='REPORT')return;
+    if(status!=='SEMUA'&&String(r.STATUS)!==status)return;
+    rows.push({
+      WAKTU:r.CREATED_AT||r.DATE||'',
+      MODUL:'REPORT',
+      JENIS:'Laporan Sarpras',
+      ID:r.ID,
+      PENGGUNA:r.USER_NAME||'-',
+      ITEM:r.TITLE||r.SUBJECT||r.DESCRIPTION||'-',
+      STATUS:r.STATUS||'-',
+      BIAYA:Number(r.TOTAL_FEE)||0,
+      IS_GUEST:r.IS_GUEST||'FALSE'
+    });
+  });
+
+  DB.MAINTENANCE.forEach(r=>{
+    const date=String(r.CREATED_AT||r.SCHEDULE_DATE||'').substring(0,10);
+    if(date<range.start||date>range.end)return;
+    if(module!=='SEMUA'&&module!=='MAINTENANCE')return;
+    if(status!=='SEMUA'&&String(r.STATUS)!==status)return;
+    rows.push({
+      WAKTU:r.CREATED_AT||r.SCHEDULE_DATE||'',
+      MODUL:'MAINTENANCE',
+      JENIS:'Maintenance',
+      ID:r.ID,
+      PENGGUNA:r.ASSIGNED_TO_NAME||r.USER_NAME||'-',
+      ITEM:r.ASSET_NAME||r.ITEM_NAME||r.DESCRIPTION||'-',
+      STATUS:r.STATUS||'-',
+      BIAYA:Number(r.COST||r.TOTAL_COST||0),
+      IS_GUEST:'FALSE'
+    });
+  });
+
+  DB.STOCK_TAKEOUTS.forEach(r=>{
+    const date=String(r.CREATED_AT||r.DATE||'').substring(0,10);
+    if(date<range.start||date>range.end)return;
+    if(module!=='SEMUA'&&module!=='STOCK_TAKE')return;
+    if(status!=='SEMUA'&&String(r.STATUS)!==status)return;
+    rows.push({
+      WAKTU:r.CREATED_AT||r.DATE||'',
+      MODUL:'STOCK_TAKE',
+      JENIS:'Stock Take',
+      ID:r.ID,
+      PENGGUNA:r.USER_NAME||'-',
+      ITEM:r.ITEM_NAME||r.ASSET_NAME||'-',
+      STATUS:r.STATUS||'SELESAI',
+      BIAYA:Number(r.TOTAL_FEE||0),
+      IS_GUEST:'FALSE'
+    });
+  });
+
+  DB.ASSETS.forEach(r=>{
+    const date=String(r.CREATED_AT||'').substring(0,10);
+    if(date<range.start||date>range.end)return;
+    if(module!=='SEMUA'&&module!=='ASSET')return;
+    rows.push({
+      WAKTU:r.CREATED_AT||'',
+      MODUL:'ASSET',
+      JENIS:'Master Aset',
+      ID:r.ID,
+      PENGGUNA:STATE.currentUser?STATE.currentUser.NAME:'-',
+      ITEM:r.NAME||'-',
+      STATUS:r.ACTIVE||'-',
+      BIAYA:Number(r.UNIT_PRICE||0),
+      IS_GUEST:'FALSE'
+    });
+  });
+
+  DB.ASSET_UNITS.forEach(r=>{
+    const date=String(r.CREATED_AT||'').substring(0,10);
+    if(date<range.start||date>range.end)return;
+    if(module!=='SEMUA'&&module!=='ASSET_UNIT')return;
+    if(status!=='SEMUA'&&String(r.STATUS)!==status)return;
+    rows.push({
+      WAKTU:r.CREATED_AT||'',
+      MODUL:'ASSET_UNIT',
+      JENIS:'Unit Inventaris',
+      ID:r.ID,
+      PENGGUNA:STATE.currentUser?STATE.currentUser.NAME:'-',
+      ITEM:nameOf('ASSETS',r.ASSET_ID)||'-',
+      STATUS:r.STATUS||'-',
+      BIAYA:0,
+      IS_GUEST:'FALSE'
+    });
+  });
+
+  DB.AUDIT_LOG.forEach(r=>{
+    const date=String(r.CREATED_AT||'').substring(0,10);
+    if(date<range.start||date>range.end)return;
+    if(module!=='SEMUA'&&module!=='AUDIT'&&module!=='CHECKOUT')return;
+    const desc=String(r.DESCRIPTION||'');
+    const isCheckout=String(r.MODULE||'').toUpperCase()==='CHECKOUT';
+    if(module==='CHECKOUT'&&!isCheckout)return;
+    if(module==='AUDIT'&&isCheckout)return;
+    rows.push({
+      WAKTU:r.CREATED_AT||'',
+      MODUL:isCheckout?'CHECKOUT':'AUDIT',
+      JENIS:isCheckout?(String(r.ACTION).toUpperCase()==='RETURN'?'Pengembalian Barang':'Pengeluaran Barang'):'Aktivitas Pengguna',
+      ID:r.RECORD_ID||r.ID,
+      PENGGUNA:r.USER_NAME||'-',
+      ITEM:desc||'-',
+      STATUS:r.ACTION||'-',
+      BIAYA:0,
+      IS_GUEST:'FALSE'
+    });
+  });
+
+  rows.sort((a,b)=>String(b.WAKTU).localeCompare(String(a.WAKTU)));
+  return rows;
+}
+function generateExecutionReport(){
+  const el=document.getElementById('executionReportResult');
+  if(!el)return;
+  const range=getExecutionReportRange();
+  if(!range.start||!range.end||range.start>range.end){
+    el.innerHTML='<div class="card"><div class="error">Rentang tanggal laporan tidak valid.</div></div>';
+    return;
+  }
+
+  const rows=getExecutionReportRows();
+  const totalBiaya=rows.reduce((s,r)=>s+(Number(r.BIAYA)||0),0);
+  const guest=rows.filter(r=>String(r.IS_GUEST).toUpperCase()==='TRUE').length;
+  const internal=rows.length-guest;
+  const modules={};
+  const statuses={};
+  const users={};
+
+  rows.forEach(r=>{
+    modules[r.MODUL]=(modules[r.MODUL]||0)+1;
+    statuses[r.STATUS]=(statuses[r.STATUS]||0)+1;
+    users[r.PENGGUNA]=(users[r.PENGGUNA]||0)+1;
+  });
+
+  const cfg=DB.APP_SETTINGS.REPORT_CONFIG||{};
+  let html='<div class="card">';
+  html+='<div class="card-title">📊 Ringkasan Laporan</div>';
+  html+='<div class="grid-2">';
+  html+='<div class="kv"><span>Periode</span><b>'+escapeHtml(range.label)+'</b></div>';
+  html+='<div class="kv"><span>Total Eksekusi</span><b>'+rows.length+'</b></div>';
+  html+='<div class="kv"><span>Internal/Login</span><b>'+internal+'</b></div>';
+  html+='<div class="kv"><span>Tamu</span><b>'+guest+'</b></div>';
+  if(cfg.SHOW_COST!=='FALSE')html+='<div class="kv"><span>Total Nilai/Biaya</span><b>'+escapeHtml(formatCurrency(totalBiaya))+'</b></div>';
+  html+='<div class="kv"><span>Modul Aktif</span><b>'+Object.keys(modules).length+'</b></div>';
+  html+='</div>';
+
+  html+='<div class="grid-2" style="margin-top:14px">';
+  html+='<div><div class="card-title">Eksekusi per Modul</div>'+barList(modules,rows.length)+'</div>';
+  html+='<div><div class="card-title">Eksekusi per Status</div>'+barList(statuses,rows.length)+'</div>';
+  html+='</div>';
+
+  if(cfg.SHOW_USER_SUMMARY!=='FALSE'){
+    html+='<div style="margin-top:16px"><div class="card-title">Aktivitas per Pengguna</div><div class="table-wrapper"><table><thead><tr><th>Pengguna</th><th>Jumlah</th></tr></thead><tbody>';
+    Object.keys(users).sort((a,b)=>users[b]-users[a]).forEach(u=>{
+      html+='<tr><td>'+escapeHtml(u)+'</td><td>'+users[u]+'</td></tr>';
+    });
+    html+='</tbody></table></div></div>';
+  }
+
+  if(!rows.length){
+    html+='<div class="empty-state" style="margin-top:16px"><div class="e-icon">📭</div>Tidak ada eksekusi pada periode dan filter yang dipilih.</div>';
+  }else{
+    const cols=cfg.COLUMNS||['WAKTU','MODUL','JENIS','ID','PENGGUNA','ITEM','STATUS','BIAYA'];
+    html+='<div style="margin-top:16px"><div class="card-title">Detail Eksekusi</div><div class="table-wrapper"><table><thead><tr>';
+    const labels={WAKTU:'Waktu',MODUL:'Modul',JENIS:'Jenis',ID:'ID',PENGGUNA:'Pengguna',ITEM:'Item/Keterangan',STATUS:'Status',BIAYA:'Biaya'};
+    cols.forEach(c=>html+='<th>'+escapeHtml(labels[c]||c)+'</th>');
+    html+='</tr></thead><tbody>';
+    rows.forEach(r=>{
+      html+='<tr>';
+      cols.forEach(c=>{
+        let value=r[c]===undefined||r[c]===null?'':r[c];
+        if(c==='BIAYA')value=formatCurrency(value);
+        html+='<td>'+escapeHtml(String(value))+'</td>';
+      });
+      html+='</tr>';
+    });
+    html+='</tbody></table></div></div>';
+  }
+
+  html+='</div>';
+  el.innerHTML=html;
+  STATE.executionReportRows=rows;
+}
+function openReportSettings(){
+  try{
+    requirePerm('setting.manage');
+    migrateReportSettings();
+    const cfg=DB.APP_SETTINGS.REPORT_CONFIG;
+    const cols=cfg.COLUMNS||['WAKTU','MODUL','JENIS','ID','PENGGUNA','ITEM','STATUS','BIAYA'];
+    const options=[
+      ['WAKTU','Waktu'],
+      ['MODUL','Modul'],
+      ['JENIS','Jenis Eksekusi'],
+      ['ID','ID Transaksi'],
+      ['PENGGUNA','Pengguna'],
+      ['ITEM','Item/Keterangan'],
+      ['STATUS','Status'],
+      ['BIAYA','Biaya/Nilai']
+    ];
+    openModal('⚙️ Pengaturan Custom Laporan',`
+      <div class="form-grid">
+        <div class="form-full">
+          <label>Judul Laporan</label>
+          <input id="rset_TITLE" value="${escapeHtml(cfg.TITLE||'Laporan Eksekusi Sistem')}">
+        </div>
+        <div>
+          <label>Periode Default</label>
+          <select id="rset_PERIOD">
+            <option value="HARIAN">Harian</option>
+            <option value="BULANAN">Bulanan</option>
+            <option value="TAHUNAN">Tahunan</option>
+            <option value="CUSTOM">Custom</option>
+          </select>
+        </div>
+        <div>
+          <label>Modul Default</label>
+          <select id="rset_MODULE">
+            <option value="SEMUA">Semua Modul</option>
+            <option value="BOOKING_ROOM">Booking Ruangan</option>
+            <option value="BOOKING_ASSET">Peminjaman Barang</option>
+            <option value="CHECKOUT">Checkout / Pengembalian</option>
+            <option value="REPORT">Laporan Sarpras</option>
+            <option value="MAINTENANCE">Maintenance</option>
+            <option value="STOCK_TAKE">Stock Take</option>
+            <option value="ASSET">Aset</option>
+            <option value="ASSET_UNIT">Unit Inventaris</option>
+            <option value="AUDIT">Audit</option>
+          </select>
+        </div>
+        <div class="form-full">
+          <label>Kolom Detail Laporan</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px">
+            ${options.map(o=>`<label class="checkline"><input class="rset_col" type="checkbox" value="${o[0]}" ${cols.includes(o[0])?'checked':''}> ${escapeHtml(o[1])}</label>`).join('')}
+          </div>
+        </div>
+        <div><label class="checkline"><input id="rset_SUMMARY" type="checkbox" ${cfg.SHOW_SUMMARY!=='FALSE'?'checked':''}> Tampilkan ringkasan</label></div>
+        <div><label class="checkline"><input id="rset_USERS" type="checkbox" ${cfg.SHOW_USER_SUMMARY!=='FALSE'?'checked':''}> Ringkasan pengguna</label></div>
+        <div><label class="checkline"><input id="rset_GUEST" type="checkbox" ${cfg.SHOW_GUEST_SUMMARY!=='FALSE'?'checked':''}> Ringkasan tamu/internal</label></div>
+        <div><label class="checkline"><input id="rset_COST" type="checkbox" ${cfg.SHOW_COST!=='FALSE'?'checked':''}> Tampilkan biaya/nilai</label></div>
+      </div>
+    `,[
+      `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
+      `<button class="btn btn-primary" onclick="saveReportSettings()">💾 Simpan Pengaturan</button>`
+    ]);
+    document.getElementById('rset_PERIOD').value=cfg.DEFAULT_PERIOD||'BULANAN';
+    document.getElementById('rset_MODULE').value=cfg.DEFAULT_MODULE||'SEMUA';
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
+}
+async function saveReportSettings(){
+  try{
+    requirePerm('setting.manage');
+    const columns=Array.from(document.querySelectorAll('.rset_col:checked')).map(x=>x.value);
+    if(!columns.length){
+      showToast('Pilih minimal satu kolom laporan.','warning');
+      return;
+    }
+    DB.APP_SETTINGS.REPORT_CONFIG={
+      TITLE:(getValue('rset_TITLE')||'Laporan Eksekusi Sistem').trim(),
+      DEFAULT_PERIOD:getValue('rset_PERIOD')||'BULANAN',
+      DEFAULT_MODULE:getValue('rset_MODULE')||'SEMUA',
+      DEFAULT_STATUS:'SEMUA',
+      SHOW_SUMMARY:document.getElementById('rset_SUMMARY').checked?'TRUE':'FALSE',
+      SHOW_USER_SUMMARY:document.getElementById('rset_USERS').checked?'TRUE':'FALSE',
+      SHOW_GUEST_SUMMARY:document.getElementById('rset_GUEST').checked?'TRUE':'FALSE',
+      SHOW_COST:document.getElementById('rset_COST').checked?'TRUE':'FALSE',
+      COLUMNS:columns
+    };
+    await audit('UPDATE','APP_SETTINGS','REPORT_CONFIG','Update pengaturan custom laporan');
+    await saveDB();
+    closeModal();
+    showToast('Pengaturan laporan berhasil disimpan.','success');
+    if(STATE.currentRoute==='reports')renderExecutionReports();
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
+}
+function exportExecutionReportExcel(){
+  try{
+    const rows=STATE.executionReportRows||getExecutionReportRows();
+    if(!rows.length){
+      showToast('Tidak ada data untuk diekspor.','warning');
+      return;
+    }
+    const exportRows=rows.map(r=>({
+      'Waktu':r.WAKTU,
+      'Modul':r.MODUL,
+      'Jenis':r.JENIS,
+      'ID':r.ID,
+      'Pengguna':r.PENGGUNA,
+      'Item/Keterangan':r.ITEM,
+      'Status':r.STATUS,
+      'Biaya':Number(r.BIAYA)||0
+    }));
+    const range=getExecutionReportRange();
+    downloadExcelWorkbook(exportRows,'Laporan Eksekusi','Laporan_Eksekusi_'+range.start+'_'+range.end+'.xlsx',[
+      {name:'Ringkasan',rows:[{
+        'Periode':range.label,
+        'Total Eksekusi':rows.length,
+        'Total Biaya/Nilai':rows.reduce((s,r)=>s+(Number(r.BIAYA)||0),0),
+        'Tanggal Cetak':nowStr()
+      }]}
+    ]);
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 
 /* =========================================================
@@ -3696,6 +4166,7 @@ function renderReports(){
       <div class="toolbar">
         <div class="toolbar-left"><input id="reportSearch" class="search-box" placeholder="🔎 Cari laporan..." oninput="renderReportTable()"></div>
         <div class="toolbar-right">${canCreate?'<button class="btn btn-primary" onclick="reportForm()">+ Buat Laporan</button>':''}</div>
+        <button class="btn btn-primary" onclick="renderExecutionReports()">📊 Laporan Eksekusi</button>
       </div>
       <div id="reportTable"></div>
     </div>
