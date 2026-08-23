@@ -348,51 +348,229 @@ let firebaseDb = null;
 let firebaseUnsub = null;
 let FIREBASE_READY = false;
 let LAST_SYNCED_JSON = null; // untuk mendeteksi echo dari tulisan sendiri saat realtime listener aktif
+const OFFLINE_QUEUE_KEY='simsarpras_offline_queue_v1';
+let OFFLINE_QUEUE=[];
+let SYNC_IN_PROGRESS=false;
+let SYNC_RETRY_TIMER=null;
+let SYNC_EVENTS_READY=false;
 
-async function setupFirebase(){
-try{
-if(typeof firebase==='undefined'){
-console.warn('SDK Firebase tidak termuat. Memakai penyimpanan lokal.');
-return;
+function loadOfflineQueue(){
+  try{
+    const raw=window.localStorage.getItem(OFFLINE_QUEUE_KEY);
+    OFFLINE_QUEUE=raw?JSON.parse(raw):[];
+    if(!Array.isArray(OFFLINE_QUEUE))OFFLINE_QUEUE=[];
+  }catch(e){
+    OFFLINE_QUEUE=[];
+  }
+  return OFFLINE_QUEUE;
 }
-firebaseApp=firebase.initializeApp(FIREBASE_CONFIG);
-firebaseDb=firebase.firestore();
-firebaseDb.settings({experimentalForceLongPolling:true});
-await Promise.race([
-firebase.auth().signInAnonymously(),
-new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firebase auth timeout')),8000))
-]);
-FIREBASE_READY=true;
-}catch(error){
-console.warn('Gagal terhubung ke Firebase, memakai penyimpanan lokal sebagai cadangan:',error);
-FIREBASE_READY=false;
+
+function saveOfflineQueue(){
+  try{
+    window.localStorage.setItem(OFFLINE_QUEUE_KEY,JSON.stringify(OFFLINE_QUEUE));
+  }catch(e){
+    console.warn('Gagal menyimpan antrean offline:',e);
+  }
 }
+
+function queueOfflineSnapshot(value){
+  const baseJson=OFFLINE_QUEUE.length?OFFLINE_QUEUE[0].baseJson:(LAST_SYNCED_JSON||'');
+  OFFLINE_QUEUE=[{
+    id:uid('OFF'),
+    createdAt:nowStr(),
+    baseJson:baseJson,
+    value:value
+  }];
+  saveOfflineQueue();
 }
-function startFirebaseSync(){
-  if(!FIREBASE_READY || !firebaseDb) return;
-  const ref = firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID);
-  firebaseUnsub = ref.onSnapshot(function(snap){
-    if(!snap.exists) return;
-    const data = snap.data();
-    const json = data && data.json;
-    if(!json || json===LAST_SYNCED_JSON) return; // bukan perubahan baru / hanya echo tulisan sendiri
-    LAST_SYNCED_JSON = json;
-    try{
-      DB = JSON.parse(json);
-      migrateDB();
-      try{ window.localStorage.setItem(DB_KEY,json); }catch(e){}
-      const modalOpen = document.getElementById('modalBackdrop') && !document.getElementById('modalBackdrop').classList.contains('hidden');
-      if(STATE.currentUser && !modalOpen && document.getElementById('app') && !document.getElementById('app').classList.contains('hidden')){
-        buildNavigation();
-        navigate(STATE.currentRoute);
-        showToast('🔄 Data diperbarui otomatis dari perangkat/pengguna lain.','success');
+
+function clearOfflineQueue(){
+  OFFLINE_QUEUE=[];
+  try{window.localStorage.removeItem(OFFLINE_QUEUE_KEY);}catch(e){}
+}
+
+function parseJsonSafe(value,fallback){
+  try{return value?JSON.parse(value):fallback;}catch(e){return fallback;}
+}
+
+function cloneJson(value){
+  try{return JSON.parse(JSON.stringify(value));}catch(e){return value;}
+}
+
+function mergeSyncValue(base,local,remote){
+  if(Array.isArray(base)&&Array.isArray(local)&&Array.isArray(remote)){
+    const baseMap=new Map(base.filter(x=>x&&x.ID!==undefined).map(x=>[String(x.ID),x]));
+    const localMap=new Map(local.filter(x=>x&&x.ID!==undefined).map(x=>[String(x.ID),x]));
+    const remoteMap=new Map(remote.filter(x=>x&&x.ID!==undefined).map(x=>[String(x.ID),x]));
+    const ids=new Set([...baseMap.keys(),...localMap.keys(),...remoteMap.keys()]);
+    const result=[];
+    ids.forEach(function(id){
+      const b=baseMap.get(id);
+      const l=localMap.get(id);
+      const r=remoteMap.get(id);
+      const localChanged=JSON.stringify(l)!==JSON.stringify(b);
+      const localDeleted=!l&&!!b;
+      if(localChanged||localDeleted){
+        if(l)result.push(cloneJson(l));
+      }else if(r){
+        result.push(cloneJson(r));
       }
-    }catch(e){ console.warn('Gagal memproses pembaruan dari Firestore:',e); }
-  }, function(error){
-    console.warn('Koneksi realtime Firestore terputus:',error);
+    });
+    const noIdLocal=local.filter(x=>!x||x.ID===undefined);
+    const noIdRemote=remote.filter(x=>!x||x.ID===undefined);
+    return result.concat(cloneJson(noIdRemote.length?noIdRemote:noIdLocal));
+  }
+  if(base&&local&&remote&&typeof base==='object'&&typeof local==='object'&&typeof remote==='object'&&!Array.isArray(base)&&!Array.isArray(local)&&!Array.isArray(remote)){
+    const result=cloneJson(remote)||{};
+    const keys=new Set([...Object.keys(base),...Object.keys(local),...Object.keys(remote)]);
+    keys.forEach(function(key){
+      const b=base[key],l=local[key];
+      if(JSON.stringify(l)!==JSON.stringify(b))result[key]=cloneJson(l);
+    });
+    return result;
+  }
+  return JSON.stringify(local)!==JSON.stringify(base)?cloneJson(local):cloneJson(remote);
+}
+
+function mergeDBSnapshots(baseJson,localJson,remoteJson){
+  const base=parseJsonSafe(baseJson,{});
+  const local=parseJsonSafe(localJson,{});
+  const remote=parseJsonSafe(remoteJson,{});
+  const result={};
+  const keys=new Set([...Object.keys(base),...Object.keys(local),...Object.keys(remote)]);
+  keys.forEach(function(key){
+    result[key]=mergeSyncValue(base[key],local[key],remote[key]);
+  });
+  return JSON.stringify(result);
+}
+
+function setupOfflineSyncEvents(){
+  if(SYNC_EVENTS_READY)return;
+  SYNC_EVENTS_READY=true;
+  window.addEventListener('online',function(){
+    if(SYNC_RETRY_TIMER){
+      clearTimeout(SYNC_RETRY_TIMER);
+      SYNC_RETRY_TIMER=null;
+    }
+    setTimeout(function(){
+      if(FIREBASE_READY&&firebaseDb)flushOfflineQueue();
+      else setupFirebase();
+    },1000);
   });
 }
 
+function scheduleOfflineSync(){
+  if(SYNC_RETRY_TIMER)return;
+  SYNC_RETRY_TIMER=setTimeout(function(){
+    SYNC_RETRY_TIMER=null;
+    if(FIREBASE_READY&&firebaseDb)flushOfflineQueue();
+  },15000);
+}
+async function setupFirebase(){
+  try{
+    FIREBASE_READY=false;
+    STORAGE_MODE=null;
+    loadOfflineQueue();
+    setupOfflineSyncEvents();
+    if(typeof firebase==='undefined'){
+      console.warn('SDK Firebase tidak termuat. Memakai penyimpanan lokal.');
+      scheduleOfflineSync();
+      return;
+    }
+    firebaseApp=firebase.apps&&firebase.apps.length?firebase.app():firebase.initializeApp(FIREBASE_CONFIG);
+    firebaseDb=firebase.firestore();
+    firebaseDb.settings({experimentalForceLongPolling:true});
+    await Promise.race([
+      firebase.auth().signInAnonymously(),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firebase auth timeout')),8000))
+    ]);
+    FIREBASE_READY=true;
+    STORAGE_MODE='firebase';
+    if(OFFLINE_QUEUE.length)await flushOfflineQueue();
+  }catch(error){
+    FIREBASE_READY=false;
+    STORAGE_MODE=null;
+    console.warn('Firebase tidak tersedia. Menggunakan penyimpanan lokal:',error);
+    scheduleOfflineSync();
+  }
+}
+function startFirebaseSync(){
+  if(!FIREBASE_READY||!firebaseDb)return;
+  if(firebaseUnsub){
+    try{firebaseUnsub();}catch(e){}
+    firebaseUnsub=null;
+  }
+  const ref=firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID);
+  firebaseUnsub=ref.onSnapshot(function(snap){
+    if(!snap.exists)return;
+    const data=snap.data();
+    const json=data&&data.json;
+    if(!json)return;
+    if(OFFLINE_QUEUE.length){
+      flushOfflineQueue();
+      return;
+    }
+    if(json===LAST_SYNCED_JSON)return;
+    try{
+      DB=JSON.parse(json);
+      migrateDB();
+      LAST_SYNCED_JSON=json;
+      try{window.localStorage.setItem(DB_KEY,json);}catch(e){}
+      const modalOpen=document.getElementById('modalBackdrop')&&!document.getElementById('modalBackdrop').classList.contains('hidden');
+      if(STATE.currentUser&&!modalOpen&&document.getElementById('app')&&!document.getElementById('app').classList.contains('hidden')){
+        buildNavigation();
+        navigate(STATE.currentRoute);
+        showToast('🔄 Data diperbarui otomatis dari perangkat lain.','success');
+      }
+    }catch(e){
+      console.warn('Gagal memproses pembaruan Firestore:',e);
+    }
+  },function(error){
+    console.warn('Koneksi realtime Firestore terputus:',error);
+    if(firebaseUnsub){
+      try{firebaseUnsub();}catch(e){}
+      firebaseUnsub=null;
+    }
+    FIREBASE_READY=false;
+    if(STORAGE_MODE==='firebase')STORAGE_MODE=null;
+    scheduleOfflineSync();
+  });
+}
+async function flushOfflineQueue(){
+  if(SYNC_IN_PROGRESS||!FIREBASE_READY||!firebaseDb||!OFFLINE_QUEUE.length)return;
+  SYNC_IN_PROGRESS=true;
+  try{
+    const queueItem=OFFLINE_QUEUE[OFFLINE_QUEUE.length-1];
+    const ref=firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID);
+    await firebaseDb.runTransaction(async function(transaction){
+      const snap=await transaction.get(ref);
+      const remoteJson=snap.exists&&snap.data()&&snap.data().json?snap.data().json:'';
+      const baseJson=queueItem.baseJson||'';
+      const mergedJson=remoteJson?mergeDBSnapshots(baseJson,queueItem.value,remoteJson):queueItem.value;
+      transaction.set(ref,{
+        json:mergedJson,
+        updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+      });
+      LAST_SYNCED_JSON=mergedJson;
+      try{window.localStorage.setItem(DB_KEY,mergedJson);}catch(e){}
+      DB=parseJsonSafe(mergedJson,DB);
+      migrateDB();
+    });
+    clearOfflineQueue();
+    FIREBASE_READY=true;
+    STORAGE_MODE='firebase';
+    if(!firebaseUnsub)startFirebaseSync();
+    if(document.getElementById('app')&&!document.getElementById('app').classList.contains('hidden'))updateStorageFooter();
+    showToast('🔄 Data offline berhasil disinkronkan ke server.','success');
+  }catch(error){
+    console.warn('Sinkronisasi antrean offline gagal:',error);
+    FIREBASE_READY=false;
+    if(STORAGE_MODE==='firebase')STORAGE_MODE=null;
+    scheduleOfflineSync();
+  }finally{
+    SYNC_IN_PROGRESS=false;
+  }
+}
 function hasClaudeStorage(){
   return typeof window.storage !== 'undefined' &&
     window.storage !== null &&
@@ -408,64 +586,124 @@ function hasLocalStorage(){
   }catch(e){ return false; }
 }
 function detectStorageMode(){
-  if(STORAGE_MODE) return STORAGE_MODE;
-  if(FIREBASE_READY) STORAGE_MODE = 'firebase';
-  else if(hasClaudeStorage()) STORAGE_MODE = 'claude';
-  else if(hasLocalStorage()) STORAGE_MODE = 'local';
-  else STORAGE_MODE = 'memory';
+  if(STORAGE_MODE==='firebase'&&FIREBASE_READY&&firebaseDb)return STORAGE_MODE;
+  if(STORAGE_MODE==='claude'&&hasClaudeStorage())return STORAGE_MODE;
+  if(STORAGE_MODE==='local'&&hasLocalStorage())return STORAGE_MODE;
+  if(FIREBASE_READY&&firebaseDb){
+    STORAGE_MODE='firebase';
+    return STORAGE_MODE;
+  }
+  if(hasClaudeStorage()){
+    STORAGE_MODE='claude';
+    return STORAGE_MODE;
+  }
+  if(hasLocalStorage()){
+    STORAGE_MODE='local';
+    return STORAGE_MODE;
+  }
+  STORAGE_MODE='memory';
   return STORAGE_MODE;
 }
-
 async function storageGet(key){
-  const mode = detectStorageMode();
+  const mode=detectStorageMode();
   try{
     if(mode==='firebase'){
-      // Sesi login (SESSION_KEY) sengaja TIDAK disinkronkan lintas perangkat —
-      // setiap perangkat/browser mengelola status login masing-masing.
-      if(key===SESSION_KEY){ return window.localStorage.getItem(key); }
-      const snap = await firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).get();
-      if(snap.exists && snap.data() && snap.data().json){
-        LAST_SYNCED_JSON = snap.data().json;
-        try{ window.localStorage.setItem(key, snap.data().json); }catch(e){}
-        return snap.data().json;
+      if(key===SESSION_KEY){
+        try{return window.localStorage.getItem(key);}catch(e){return null;}
       }
-      return window.localStorage.getItem(key); // dokumen belum ada (pertama kali pakai)
+      if(!firebaseDb)throw new Error('Firestore tidak tersedia.');
+      const snap=await Promise.race([
+        firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).get(),
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore read timeout')),10000))
+      ]);
+      if(snap.exists&&snap.data()&&snap.data().json){
+        const json=snap.data().json;
+        LAST_SYNCED_JSON=json;
+        try{window.localStorage.setItem(key,json);}catch(e){}
+        return json;
+      }
+      try{return window.localStorage.getItem(key);}catch(e){return null;}
     }
     if(mode==='claude'){
-      const r = await window.storage.get(key,false);
-      return r ? r.value : null;
+      const r=await window.storage.get(key,false);
+      return r?r.value:null;
     }
     if(mode==='local'){
       return window.localStorage.getItem(key);
     }
-    return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key) ? MEMORY_FALLBACK[key] : null;
-  }catch(e){
-    console.warn('storage get failed, falling back to local cache:',e);
-    try{ const v = window.localStorage.getItem(key); if(v!==null) return v; }catch(e2){}
-    return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key) ? MEMORY_FALLBACK[key] : null;
+    return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key)?MEMORY_FALLBACK[key]:null;
+  }catch(error){
+    console.warn('storageGet gagal:',error);
+    if(mode==='firebase'){
+      FIREBASE_READY=false;
+      STORAGE_MODE=null;
+      scheduleOfflineSync();
+    }
+    try{
+      const value=window.localStorage.getItem(key);
+      if(value!==null)return value;
+    }catch(e){}
+    if(hasClaudeStorage()){
+      try{
+        const r=await window.storage.get(key,false);
+        if(r&&r.value!==undefined)return r.value;
+      }catch(e){}
+    }
+    return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key)?MEMORY_FALLBACK[key]:null;
   }
 }
 async function storageSet(key,value){
-  const mode = detectStorageMode();
-  try{
-    if(mode==='firebase'){
-      if(key===SESSION_KEY){ window.localStorage.setItem(key,value); return; }
-      LAST_SYNCED_JSON = value;
-      await firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).set({
-        json:value, updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
-      try{ window.localStorage.setItem(key,value); }catch(e){} // cache offline
+  if(key===SESSION_KEY){
+    try{window.localStorage.setItem(key,value);}catch(e){MEMORY_FALLBACK[key]=value;}
+    return;
+  }
+  const mode=detectStorageMode();
+  if(mode==='firebase'&&firebaseDb&&FIREBASE_READY){
+    try{
+      await Promise.race([
+        firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).set({
+          json:value,
+          updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+        }),
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore write timeout')),10000))
+      ]);
+      LAST_SYNCED_JSON=value;
+      try{window.localStorage.setItem(key,value);}catch(e){}
+      return;
+    }catch(error){
+      console.warn('Firestore write gagal, masuk antrean offline:',error);
+      FIREBASE_READY=false;
+      STORAGE_MODE=null;
+      queueOfflineSnapshot(value);
+      try{window.localStorage.setItem(key,value);}catch(e){MEMORY_FALLBACK[key]=value;}
+      scheduleOfflineSync();
       return;
     }
-    if(mode==='claude'){ await window.storage.set(key,value,false); return; }
-    if(mode==='local'){ window.localStorage.setItem(key,value); return; }
-    MEMORY_FALLBACK[key] = value;
-  }catch(e){
-    console.warn('storage set failed, falling back to local cache:',e);
-    try{ window.localStorage.setItem(key,value); }catch(e2){ MEMORY_FALLBACK[key] = value; }
+  }
+  if(mode==='claude'){
+    try{
+      await window.storage.set(key,value,false);
+      return;
+    }catch(error){
+      console.warn('Claude storage gagal, menggunakan antrean lokal:',error);
+    }
+  }
+  if(mode==='local'){
+    try{
+      window.localStorage.setItem(key,value);
+      return;
+    }catch(error){}
+  }
+  try{
+    window.localStorage.setItem(key,value);
+  }catch(error){
+    MEMORY_FALLBACK[key]=value;
+  }
+  if(key===DB_KEY){
+    queueOfflineSnapshot(value);
+    scheduleOfflineSync();
   }
 }
-
 /* =========================================================
    STATE
 ========================================================= */
