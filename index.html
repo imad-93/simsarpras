@@ -230,6 +230,7 @@ tbody tr:hover{background:#FAFBFE}
       <button id="loginButton" class="btn btn-primary btn-block" type="submit">🔐 Masuk</button>
     </form>
     <button type="button" class="btn btn-light btn-block" style="margin-top:10px" onclick="showGuestBooking()">🎫 Booking Tamu (Tanpa Login)</button>
+        <button type="button" class="btn btn-light btn-block" style="margin-top:10px" onclick="showGuestStatusLookup()">🔍 Cek Status / Upload Bukti Transfer</button>
     <div class="login-footer" id="storageFooter">SIM-SARPRAS UAS KENCONG Copyright@2026</div>
   </div>
 </div>
@@ -245,6 +246,19 @@ tbody tr:hover{background:#FAFBFE}
       <button type="button" class="btn btn-light btn-sm" onclick="backToLoginFromGuest()">✕ Tutup</button>
     </div>
     <div id="guestContent"></div>
+  </div>
+</div>
+<div id="guestStatusPage" class="login-page hidden" style="align-items:flex-start;padding:36px 20px">
+  <div class="login-card" style="max-width:520px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+      <div>
+        <div class="logo">🔍</div>
+        <div class="login-title">Cek Status Booking</div>
+        <div class="login-subtitle">Scan QR booking Anda atau masukkan Kode Booking untuk melihat status, invoice, dan mengunggah bukti transfer.</div>
+      </div>
+      <button type="button" class="btn btn-light btn-sm" onclick="backToLoginFromGuestStatus()">✕ Tutup</button>
+    </div>
+    <div id="guestStatusContent"></div>
   </div>
 </div>
 
@@ -2024,7 +2038,7 @@ function renderTableHtml(rows,columns,renderActions){
 
 function formatCell(row,key){
   const value = row[key];
-  if(key==='ACTIVE' || key==='STATUS') return statusBadge(value);
+  if(key==='ACTIVE' || key==='STATUS' || key==='PAYMENT_STATUS') return statusBadge(value||'BELUM_INVOICE');
   if(key==='UNIT_PRICE' || key==='TOTAL_FEE' || key==='RENTAL_FEE' || key==='BASE_FEE' || key==='FACILITY_FEE') return escapeHtml(formatCurrency(value));
   if(key==='BUILDING_ID') return escapeHtml(nameOf('BUILDINGS',value) || '-');
   if(key==='ROOM_ID') return escapeHtml(nameOf('ROOMS',value) || '-');
@@ -2058,11 +2072,19 @@ function statusBadge(value){
   const text = value===undefined||value===null||value==='' ? '-' : String(value);
   const upper = text.toUpperCase();
   let cls = 'badge-gray';
-  if(['AKTIF','ACTIVE','TRUE','APPROVED','DISETUJUI','SELESAI','TERSEDIA','BAIK'].includes(upper)) cls='badge-green';
-  else if(['MENUNGGU','PENDING','DIPROSES','MAINTENANCE','DITINJAU','DITUGASKAN','TERJADWAL','DIAMBIL','DIPINJAM'].includes(upper)) cls='badge-yellow';
+  if(['AKTIF','ACTIVE','TRUE','APPROVED','DISETUJUI','SELESAI','TERSEDIA','BAIK','LUNAS','GRATIS'].includes(upper)) cls='badge-green';
+  else if(['MENUNGGU','PENDING','DIPROSES','MAINTENANCE','DITINJAU','DITUGASKAN','TERJADWAL','DIAMBIL','DIPINJAM','MENUNGGU_PEMBAYARAN','MENUNGGU_VERIFIKASI'].includes(upper)) cls='badge-yellow';
   else if(['NONAKTIF','INACTIVE','FALSE','DITOLAK','REJECTED','RUSAK','RUSAK_BERAT','HILANG','DIBATALKAN','DITUTUP'].includes(upper)) cls='badge-red';
+  else if(upper==='BELUM_INVOICE') cls='badge-gray';
   else cls='badge-blue';
-  const label = {TRUE:'Aktif',FALSE:'Nonaktif'}[upper] || text;
+  const label = {
+    TRUE:'Aktif',FALSE:'Nonaktif',
+    BELUM_INVOICE:'Belum Invoice',
+    MENUNGGU_PEMBAYARAN:'Menunggu Pembayaran',
+    MENUNGGU_VERIFIKASI:'Menunggu Verifikasi TF',
+    LUNAS:'Lunas',
+    GRATIS:'Gratis (Internal)'
+  }[upper] || text;
   return '<span class="badge '+cls+'">'+escapeHtml(label)+'</span>';
 }
 
@@ -3285,6 +3307,7 @@ function renderBookingTable(){
       ['START_TIME','Mulai'],
       ['END_TIME','Selesai'],
       ['STATUS','Status'],
+      ['PAYMENT_STATUS','Pembayaran'],
       ['TOTAL_FEE','Total']
     ],
     function(row){
@@ -3297,8 +3320,19 @@ function renderBookingTable(){
         html+=`<button class="btn btn-light btn-sm" onclick="alert('Kontak tamu: ${escapeHtml(row.GUEST_CONTACT)}\\nInstansi/Keperluan: ${escapeHtml(row.GUEST_INSTANSI||'-')}')" title="Lihat kontak tamu">📞</button>`;
       }
 
+            const isGuestRow=String(row.IS_GUEST).toUpperCase()==='TRUE';
+      const payStatus=row.PAYMENT_STATUS||(isGuestRow?'BELUM_INVOICE':'GRATIS');
+
       if(row.STATUS==='MENUNGGU'&&canApprove){
-        html+=`<button class="btn btn-success btn-sm" onclick="setBookingStatus('${row.ID}','DISETUJUI')">✅</button><button class="btn btn-danger btn-sm" onclick="setBookingStatus('${row.ID}','DITOLAK')">✖️</button>`;
+        if(!isGuestRow || payStatus==='LUNAS'){
+          html+=`<button class="btn btn-success btn-sm" onclick="setBookingStatus('${row.ID}','DISETUJUI')">✅</button><button class="btn btn-danger btn-sm" onclick="setBookingStatus('${row.ID}','DITOLAK')">✖️</button>`;
+        }else if(payStatus==='BELUM_INVOICE'){
+          html+=`<button class="btn btn-primary btn-sm" onclick="openInvoiceForm('${row.ID}')">🧾 Buat Invoice</button><button class="btn btn-danger btn-sm" onclick="setBookingStatus('${row.ID}','DITOLAK')">✖️</button>`;
+        }else if(payStatus==='MENUNGGU_PEMBAYARAN'){
+          html+=`<span class="badge badge-yellow">Menunggu bayar</span>`;
+        }else if(payStatus==='MENUNGGU_VERIFIKASI'){
+          html+=`<button class="btn btn-primary btn-sm" onclick="openPaymentVerifyForm('${row.ID}')">🔍 Verifikasi TF</button>`;
+        }
       }
 
       if(['MENUNGGU','DISETUJUI'].includes(row.STATUS)&&(canCancel||isOwner)){
@@ -3439,6 +3473,7 @@ async function saveBooking(type){
       TOTAL_FEE:0,
       FACILITY_LIST:'',
       STATUS:'MENUNGGU',
+      PAYMENT_STATUS:'GRATIS',
       NOTE:'',
       CREATED_AT:nowStr()
     };
@@ -3735,7 +3770,91 @@ async function setBookingStatus(id,status){
     renderBookingTable();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
+/* =========================================================
+   INVOICE & VERIFIKASI PEMBAYARAN (khusus booking tamu)
+========================================================= */
+function openInvoiceForm(id){
+  requirePerm('booking.approve');
+  const booking=DB.BOOKINGS.find(b=>b.ID===id);
+  if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
+  const defaultDue=nowStr().substring(0,10);
+  openModal('🧾 Buat Invoice — '+booking.ITEM_NAME, `
+    <div class="hint" style="margin-bottom:10px">Invoice ini hanya berlaku untuk booking tamu. Nominal default diambil dari estimasi biaya, silakan sesuaikan bila perlu.</div>
+    <div class="form-grid">
+      <div><label>Nominal Tagihan (Rp) *</label><input id="inv_AMOUNT" type="number" min="0" value="${Number(booking.TOTAL_FEE)||0}"></div>
+      <div><label>Batas Waktu Bayar *</label><input id="inv_DUE" type="date" value="${defaultDue}"></div>
+      <div class="form-full"><label>Catatan / Info Rekening</label><textarea id="inv_NOTE" placeholder="Contoh: Transfer ke BNI 1234567890 a.n. Bendahara Sarpras">${escapeHtml(booking.INVOICE_NOTE||'')}</textarea></div>
+    </div>
+  `,[
+    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
+    `<button class="btn btn-primary" onclick="saveInvoice('${id}')">💾 Terbitkan Invoice</button>`
+  ]);
+}
+async function saveInvoice(id){
+  try{
+    requirePerm('booking.approve');
+    const amount=Number(getValue('inv_AMOUNT'))||0;
+    const due=getValue('inv_DUE');
+    const note=getValue('inv_NOTE');
+    if(amount<=0||!due){ showToast('Nominal dan batas waktu wajib diisi.','warning'); return; }
+    const booking=DB.BOOKINGS.find(b=>b.ID===id);
+    if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
+    booking.INVOICE_AMOUNT=amount;
+    booking.INVOICE_DUE_AT=due;
+    booking.INVOICE_NOTE=note;
+    booking.INVOICE_CREATED_AT=nowStr();
+    booking.PAYMENT_STATUS='MENUNGGU_PEMBAYARAN';
+    await audit('INVOICE','BOOKINGS',id,'Terbitkan invoice Rp'+amount+' untuk '+booking.USER_NAME);
+    await saveDB();
+    closeModal();
+    showToast('Invoice diterbitkan. Sampaikan kode booking ke tamu untuk upload bukti transfer.','success');
+    renderBookingTable();
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+function openPaymentVerifyForm(id){
+  requirePerm('booking.approve');
+  const booking=DB.BOOKINGS.find(b=>b.ID===id);
+  if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
+  if(!booking.PROOF_FILE_DATA){ showToast('Tamu belum mengunggah bukti transfer.','warning'); return; }
+  const preview=String(booking.PROOF_FILE_TYPE||'').includes('pdf')
+    ? `<a href="${booking.PROOF_FILE_DATA}" target="_blank" class="btn btn-light btn-block">📄 Buka File PDF: ${escapeHtml(booking.PROOF_FILE_NAME||'bukti.pdf')}</a>`
+    : `<img src="${booking.PROOF_FILE_DATA}" style="width:100%;max-height:320px;object-fit:contain;border-radius:10px;border:1px solid var(--border)">`;
 
+  openModal('🔍 Verifikasi Pembayaran — '+booking.ITEM_NAME, `
+    <div class="kv"><span>Pemohon</span><b>${escapeHtml(booking.USER_NAME)}</b></div>
+    <div class="kv"><span>Nominal Invoice</span><b>${escapeHtml(formatCurrency(booking.INVOICE_AMOUNT||0))}</b></div>
+    <div class="kv"><span>Diunggah</span><b>${escapeHtml(booking.PROOF_UPLOADED_AT||'-')}</b></div>
+    <div style="margin-top:10px">${preview}</div>
+    <div class="form-group" style="margin-top:12px"><label>Catatan (wajib jika ditolak)</label><textarea id="pv_NOTE"></textarea></div>
+  `,[
+    `<button class="btn btn-light" onclick="closeModal()">Tutup</button>`,
+    `<button class="btn btn-danger" onclick="verifyPayment('${id}',false)">✖️ Tolak</button>`,
+    `<button class="btn btn-success" onclick="verifyPayment('${id}',true)">✅ Terima (Lunas)</button>`
+  ]);
+}
+async function verifyPayment(id,approve){
+  try{
+    requirePerm('booking.approve');
+    const booking=DB.BOOKINGS.find(b=>b.ID===id);
+    if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
+    const note=getValue('pv_NOTE');
+    if(approve){
+      booking.PAYMENT_STATUS='LUNAS';
+      booking.PROOF_REJECT_NOTE='';
+      await audit('VERIFY_PAYMENT','BOOKINGS',id,'Pembayaran diverifikasi lunas untuk '+booking.USER_NAME);
+      showToast('Pembayaran dikonfirmasi lunas. Silakan setujui booking.','success');
+    }else{
+      if(!note){ showToast('Catatan alasan penolakan wajib diisi.','warning'); return; }
+      booking.PAYMENT_STATUS='MENUNGGU_PEMBAYARAN';
+      booking.PROOF_REJECT_NOTE=note;
+      await audit('VERIFY_PAYMENT','BOOKINGS',id,'Bukti transfer ditolak: '+note);
+      showToast('Bukti transfer ditolak, tamu diminta upload ulang.','warning');
+    }
+    await saveDB();
+    closeModal();
+    renderBookingTable();
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
 /* =========================================================
    BOOKING TAMU (TANPA LOGIN)
 ========================================================= */
@@ -4138,6 +4257,7 @@ async function submitGuestBooking(){
         TOTAL_FEE:calculation.total+facilityFeeSum,
         FACILITY_LIST:facilityList.join(', '),
         STATUS:'MENUNGGU',
+        PAYMENT_STATUS:'BELUM_INVOICE',
         NOTE:'',
         CREATED_AT:nowStr()
       };
@@ -4253,6 +4373,7 @@ async function submitGuestBooking(){
       TOTAL_FEE:itemsSubtotal+facilityFeeSum,
       FACILITY_LIST:facilityList.join(', '),
       STATUS:'MENUNGGU',
+      PAYMENT_STATUS:'BELUM_INVOICE',
       NOTE:'',
       CREATED_AT:nowStr()
     };
@@ -4265,6 +4386,7 @@ async function submitGuestBooking(){
     showToast(getErrorMessage(error),'error');
   }
 }
+
 function showGuestSuccess(data){
   const durationText=data.RATE_UNIT==='JAM'?(data.DURATION_HOURS||0)+' jam':(data.DURATION_DAYS||0)+' hari';
   const unitText=data.RATE_UNIT==='HARI'?'Hari':data.RATE_UNIT==='JAM'?'Jam':'Campuran';
@@ -4276,8 +4398,9 @@ function showGuestSuccess(data){
     <div style="text-align:center;padding:20px 10px">
       <div style="font-size:44px">✅</div>
       <div style="font-weight:800;font-size:16px;margin-top:8px">Pengajuan Berhasil Dikirim</div>
-      <div class="hint" style="margin-top:6px">Simpan nomor referensi ini untuk konfirmasi ke petugas sarpras. Pengajuan akan diproses oleh pengelola.</div>
-      <div style="margin-top:14px;background:#F5F6FB;border:1px dashed #C7CCE0;border-radius:11px;padding:14px;font-weight:800;font-size:15px;letter-spacing:.5px">${escapeHtml(data.ID)}</div>
+      <div class="hint" style="margin-top:6px">Simpan QR ini. Gunakan menu <b>"Cek Status / Upload Bukti Transfer"</b> di halaman login untuk memantau invoice dan mengunggah bukti transfer.</div>
+      <div id="guestQrTarget" style="display:inline-block;margin-top:14px;padding:14px;background:#fff;border:1px solid var(--border);border-radius:12px"></div>
+      <div style="margin-top:10px;background:#F5F6FB;border:1px dashed #C7CCE0;border-radius:11px;padding:12px;font-weight:800;font-size:15px;letter-spacing:.5px">${escapeHtml(data.ID)}</div>
       <div style="margin-top:14px;text-align:left">
         <div class="kv"><span>Item</span><b>${escapeHtml(data.ITEM_NAME)}</b></div>
         <div class="kv"><span>Tanggal</span><b>${escapeHtml(data.DATE)} s/d ${escapeHtml(data.END_DATE||data.DATE)}</b></div>
@@ -4285,14 +4408,159 @@ function showGuestSuccess(data){
         <div class="kv"><span>Akumulasi</span><b>${escapeHtml(durationText)}</b></div>
         <div class="kv"><span>Satuan Tarif</span><b>${escapeHtml(unitText)}</b></div>
         <div class="kv"><span>Total Biaya</span><b>${escapeHtml(formatCurrency(data.TOTAL_FEE||0))}</b></div>
-        <div class="kv"><span>Status</span><b>Menunggu Persetujuan</b></div>
+        <div class="kv"><span>Status</span><b>Menunggu Verifikasi Jadwal oleh Admin</b></div>
       </div>
       <div style="display:flex;gap:8px;margin-top:18px">
-        <button type="button" class="btn btn-light btn-block" onclick="showGuestBooking()">🔁 Buat Booking Lain</button>
-        <button type="button" class="btn btn-primary btn-block" onclick="backToLoginFromGuest()">Kembali ke Login</button>
+        <button type="button" class="btn btn-light btn-block" onclick="downloadGuestQr('${escapeHtml(data.ID)}')">⬇️ Download QR</button>
+        <button type="button" class="btn btn-light btn-block" onclick="showGuestBooking()">🔁 Booking Lain</button>
+        <button type="button" class="btn btn-primary btn-block" onclick="backToLoginFromGuest()">Kembali</button>
       </div>
     </div>
   `;
+
+  setTimeout(function(){
+    const target=document.getElementById('guestQrTarget');
+    if(!target)return;
+    target.innerHTML='';
+    if(typeof QRCode==='undefined'){
+      target.innerHTML='<div style="color:var(--danger);font-size:12px">Pustaka QR gagal dimuat.</div>';
+      return;
+    }
+    new QRCode(target,{text:data.ID,width:190,height:190,correctLevel:QRCode.CorrectLevel.M});
+  },50);
+}
+function downloadGuestQr(bookingId){
+  const canvas=document.querySelector('#guestQrTarget canvas');
+  if(!canvas){ showToast('QR belum siap, coba lagi.','warning'); return; }
+  const link=document.createElement('a');
+  link.download='QR-Booking-'+bookingId+'.png';
+  link.href=canvas.toDataURL('image/png');
+  link.click();
+}
+/* =========================================================
+   CEK STATUS BOOKING TAMU + UPLOAD BUKTI TRANSFER
+========================================================= */
+function showGuestStatusLookup(){
+  document.getElementById('loginPage').classList.add('hidden');
+  document.getElementById('guestStatusPage').classList.remove('hidden');
+  renderGuestStatusLookupForm();
+}
+function backToLoginFromGuestStatus(){
+  document.getElementById('guestStatusPage').classList.add('hidden');
+  document.getElementById('loginPage').classList.remove('hidden');
+}
+function renderGuestStatusLookupForm(){
+  const el=document.getElementById('guestStatusContent');
+  el.innerHTML=`
+    <div class="form-group" style="margin-top:16px">
+      <label>Kode Booking</label>
+      <div style="display:flex;gap:8px">
+        <input id="gs_CODE" placeholder="Contoh: BKG-XXXXXXXX" style="flex:1">
+        <button type="button" class="btn btn-primary" onclick="openQrScanner(function(text){document.getElementById('gs_CODE').value=text;lookupGuestBooking();})">📷 Scan QR</button>
+      </div>
+    </div>
+    <button type="button" class="btn btn-primary btn-block" onclick="lookupGuestBooking()">🔎 Cek Status</button>
+    <div id="guestStatusResult" style="margin-top:16px"></div>
+  `;
+}
+function lookupGuestBooking(){
+  const code=(document.getElementById('gs_CODE').value||'').trim();
+  const resultEl=document.getElementById('guestStatusResult');
+  if(!code){ showToast('Masukkan atau scan kode booking.','warning'); return; }
+  const booking=DB.BOOKINGS.find(b=>b.ID===code && String(b.IS_GUEST).toUpperCase()==='TRUE');
+  if(!booking){
+    resultEl.innerHTML='<div class="error">Kode booking tidak ditemukan atau bukan booking tamu.</div>';
+    return;
+  }
+  renderGuestStatusDetail(booking);
+}
+function renderGuestStatusDetail(booking){
+  const resultEl=document.getElementById('guestStatusResult');
+  const pay=booking.PAYMENT_STATUS||'BELUM_INVOICE';
+
+  let actionHtml='';
+  if(booking.STATUS==='DITOLAK'){
+    actionHtml=`<div class="error">Pengajuan ini ditolak oleh pengelola.${booking.NOTE?' Catatan: '+escapeHtml(booking.NOTE):''}</div>`;
+  }else if(booking.STATUS==='DIBATALKAN'){
+    actionHtml=`<div class="error">Booking ini sudah dibatalkan.</div>`;
+  }else if(pay==='BELUM_INVOICE'){
+    actionHtml=`<div class="hint">Pengelola belum menerbitkan invoice. Silakan cek kembali beberapa saat lagi.</div>`;
+  }else if(pay==='MENUNGGU_PEMBAYARAN'){
+    actionHtml=`
+      <div class="card" style="box-shadow:none;border:1px solid var(--border)">
+        <div class="card-title">🧾 Invoice</div>
+        <div class="kv"><span>Nominal</span><b>${escapeHtml(formatCurrency(booking.INVOICE_AMOUNT||0))}</b></div>
+        <div class="kv"><span>Batas Waktu Bayar</span><b>${escapeHtml(booking.INVOICE_DUE_AT||'-')}</b></div>
+        ${booking.INVOICE_NOTE?`<div class="kv"><span>Catatan</span><b>${escapeHtml(booking.INVOICE_NOTE)}</b></div>`:''}
+        ${booking.PROOF_REJECT_NOTE?`<div class="error">Bukti sebelumnya ditolak: ${escapeHtml(booking.PROOF_REJECT_NOTE)}</div>`:''}
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label>Upload Bukti Transfer (JPG/PDF, maks 3MB) *</label>
+        <input id="gs_PROOF_FILE" type="file" accept=".jpg,.jpeg,.pdf,image/jpeg,application/pdf">
+      </div>
+      <button type="button" class="btn btn-primary btn-block" onclick="submitProofUpload('${booking.ID}')">📤 Kirim Bukti Transfer</button>
+    `;
+  }else if(pay==='MENUNGGU_VERIFIKASI'){
+    actionHtml=`<div class="hint">✅ Bukti transfer sudah dikirim. Menunggu verifikasi oleh pengelola.</div>${renderProofPreview(booking)}`;
+  }else if(pay==='LUNAS'){
+    actionHtml=`<div class="hint">✅ Pembayaran terverifikasi (Lunas). Status pengajuan: <b>${escapeHtml(booking.STATUS)}</b>.</div>`;
+  }
+
+  resultEl.innerHTML=`
+    <div class="kv"><span>Item</span><b>${escapeHtml(booking.ITEM_NAME)}</b></div>
+    <div class="kv"><span>Tanggal</span><b>${escapeHtml(booking.DATE)} s/d ${escapeHtml(booking.END_DATE||booking.DATE)}</b></div>
+    <div class="kv"><span>Status Pengajuan</span>${statusBadge(booking.STATUS)}</div>
+    <div class="kv"><span>Status Pembayaran</span>${statusBadge(pay)}</div>
+    <div style="margin-top:12px">${actionHtml}</div>
+  `;
+}
+function renderProofPreview(booking){
+  if(!booking.PROOF_FILE_DATA)return'';
+  if(String(booking.PROOF_FILE_TYPE||'').includes('pdf')){
+    return `<div class="hint" style="margin-top:8px">File bukti: ${escapeHtml(booking.PROOF_FILE_NAME||'bukti.pdf')} (PDF)</div>`;
+  }
+  return `<img src="${booking.PROOF_FILE_DATA}" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-top:8px;border:1px solid var(--border)">`;
+}
+function readFileAsDataURL(file){
+  return new Promise(function(resolve,reject){
+    const reader=new FileReader();
+    reader.onload=function(){resolve(reader.result);};
+    reader.onerror=function(){reject(new Error('Gagal membaca file.'));};
+    reader.readAsDataURL(file);
+  });
+}
+async function submitProofUpload(bookingId){
+  try{
+    const fileInput=document.getElementById('gs_PROOF_FILE');
+    if(!fileInput||!fileInput.files||!fileInput.files[0]){
+      showToast('Pilih file bukti transfer terlebih dahulu.','warning');
+      return;
+    }
+    const file=fileInput.files[0];
+    const allowedTypes=['image/jpeg','application/pdf'];
+    if(!allowedTypes.includes(file.type)){
+      showToast('Format file harus JPG atau PDF.','warning');
+      return;
+    }
+    if(file.size>3*1024*1024){
+      showToast('Ukuran file maksimal 3MB.','warning');
+      return;
+    }
+    const dataUrl=await readFileAsDataURL(file);
+    const booking=DB.BOOKINGS.find(b=>b.ID===bookingId);
+    if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
+    booking.PROOF_FILE_DATA=dataUrl;
+    booking.PROOF_FILE_NAME=file.name;
+    booking.PROOF_FILE_TYPE=file.type;
+    booking.PROOF_UPLOADED_AT=nowStr();
+    booking.PROOF_REJECT_NOTE='';
+    booking.PAYMENT_STATUS='MENUNGGU_VERIFIKASI';
+    await saveDB();
+    showToast('Bukti transfer berhasil dikirim. Menunggu verifikasi pengelola.','success');
+    renderGuestStatusDetail(booking);
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 /* =========================================================
    AMBIL BARANG — ASET HABIS PAKAI
