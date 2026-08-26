@@ -229,12 +229,9 @@ tbody tr:hover{background:#FAFBFE}
       </div>
       <button id="loginButton" class="btn btn-primary btn-block" type="submit">🔐 Masuk</button>
     </form>
-   <div class="d-flex gap-2" style="margin-top: 10px;">
-  <button type="button" class="btn btn-light flex-grow-1" style="flex-basis: 60%;" onclick="showGuestBooking()">🎫 Booking Tamu Non-Login</button>
-  <button type="button" class="btn btn-light flex-grow-1" style="flex-basis: 40%;" onclick="showGuestStatusLookup()">🔍 Cek Status</button>
-</div>
-
-<div class="login-footer" id="storageFooter">SIM-SARPRAS UAS KENCONG Copyright@2026</div>
+    <button type="button" class="btn btn-light btn-block" style="margin-top:10px" onclick="showGuestBooking()">🎫 Booking Tamu (Tanpa Login)</button> 
+    <button type="button" class="btn btn-light btn-block" style="margin-top:10px" onclick="showGuestStatusLookup()">🔍 Cek Status / Upload Bukti Transfer</button>
+    <div class="login-footer" id="storageFooter">SIM-SARPRAS UAS KENCONG Copyright@2026</div>
   </div>
 </div>
 
@@ -4436,9 +4433,9 @@ function showGuestSuccess(data){
         <div class="kv"><span>Status</span><b>Menunggu Verifikasi Jadwal oleh Admin</b></div>
       </div>
       <div style="display:flex;gap:8px;margin-top:18px">
-        <button type="button" class="btn btn-light btn-block" onclick="downloadGuestQr('${escapeHtml(data.ID)}')">⬇️ Download QR</button>
-        <button type="button" class="btn btn-light btn-block" onclick="showGuestBooking()">🔁 Booking Lain</button>
-        <button type="button" class="btn btn-primary btn-block" onclick="backToLoginFromGuest()">Kembali</button>
+        <button type="button" class="btn btn-light btn-block" onclick="downloadGuestQr('${escapeHtml(data.ID)}')">⬇️ QR</button>
+        <button type="button" class="btn btn-light btn-block" onclick="showGuestBooking()">🔁 Refresh</button>
+        <button type="button" class="btn btn-primary btn-block" onclick="backToLoginFromGuest()">🏠 Login</button>
       </div>
     </div>
   `;
