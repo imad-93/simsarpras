@@ -229,9 +229,15 @@ tbody tr:hover{background:#FAFBFE}
       </div>
       <button id="loginButton" class="btn btn-primary btn-block" type="submit">🔐 Masuk</button>
     </form>
-    <button type="button" class="btn btn-light btn-block" style="margin-top:10px" onclick="showGuestBooking()">🎫 Booking Tamu (Tanpa Login)</button>
-        <button type="button" class="btn btn-light btn-block" style="margin-top:10px" onclick="showGuestStatusLookup()">🔍 Cek Status / Upload Bukti Transfer</button>
-    <div class="login-footer" id="storageFooter">SIM-SARPRAS UAS KENCONG Copyright@2026</div>
+   <div class="row g-2" style="margin-top: 10px;">
+  <div class="col-7">
+    <button type="button" class="btn btn-light btn-block w-100" onclick="showGuestBooking()">🎫 Booking Tamu Non-Login</button>
+  </div>
+  <div class="col-5">
+    <button type="button" class="btn btn-light btn-block w-100" onclick="showGuestStatusLookup()">🔍 Cek Status</button>
+  </div>
+</div>
+<div class="login-footer" id="storageFooter">SIM-SARPRAS UAS KENCONG Copyright@2026</div>
   </div>
 </div>
 
