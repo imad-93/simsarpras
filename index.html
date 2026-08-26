@@ -230,7 +230,6 @@ tbody tr:hover{background:#FAFBFE}
       <button id="loginButton" class="btn btn-primary btn-block" type="submit">🔐 Masuk</button>
     </form>
     <button type="button" class="btn btn-light btn-block" style="margin-top:10px" onclick="showGuestBooking()">🎫 Booking Tamu (Tanpa Login)</button> 
-    <button type="button" class="btn btn-light btn-block" style="margin-top:10px" onclick="showGuestStatusLookup()">🔍 Cek Status / Upload Bukti Transfer</button>
     <div class="login-footer" id="storageFooter">SIM-SARPRAS UAS KENCONG Copyright@2026</div>
   </div>
 </div>
@@ -257,6 +256,8 @@ tbody tr:hover{background:#FAFBFE}
         <div class="login-subtitle">Scan QR booking Anda atau masukkan Kode Booking untuk melihat status, invoice, dan mengunggah bukti transfer.</div>
       </div>
       <button type="button" class="btn btn-light btn-sm" onclick="backToLoginFromGuestStatus()">✕ Tutup</button>
+      <button type="button" class="btn btn-light btn-sm" onclick="showGuestStatusLookup()">🔍 Cek Status / Upload Bukti Transfer</button>
+
     </div>
     <div id="guestStatusContent"></div>
   </div>
@@ -3788,15 +3789,35 @@ async function setBookingStatus(id,status){
 /* =========================================================
    INVOICE & VERIFIKASI PEMBAYARAN (khusus booking tamu)
 ========================================================= */
+let CURRENT_INVOICE_BOOKING_ID=null;
+
 function openInvoiceForm(id){
   requirePerm('booking.approve');
   const booking=DB.BOOKINGS.find(b=>b.ID===id);
   if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
+  CURRENT_INVOICE_BOOKING_ID=id;
   const defaultDue=nowStr().substring(0,10);
   openModal('🧾 Buat Invoice — '+booking.ITEM_NAME, `
-    <div class="hint" style="margin-bottom:10px">Invoice ini hanya berlaku untuk booking tamu. Nominal default diambil dari estimasi biaya, silakan sesuaikan bila perlu.</div>
-    <div class="form-grid">
-      <div><label>Nominal Tagihan (Rp) *</label><input id="inv_AMOUNT" type="number" min="0" value="${Number(booking.TOTAL_FEE)||0}"></div>
+    <div class="kv"><span>Estimasi Awal (sebelum diskon)</span><b>${escapeHtml(formatCurrency(booking.TOTAL_FEE||0))}</b></div>
+    <div class="form-grid" style="margin-top:10px">
+      <div>
+        <label>Jenis Diskon</label>
+        <select id="inv_DISC_TYPE" onchange="updateInvoiceDiscountPreview()">
+          <option value="NONE" ${!booking.DISCOUNT_TYPE||booking.DISCOUNT_TYPE==='NONE'?'selected':''}>Tidak Ada Diskon</option>
+          <option value="PERCENT" ${booking.DISCOUNT_TYPE==='PERCENT'?'selected':''}>Persen (%)</option>
+          <option value="NOMINAL" ${booking.DISCOUNT_TYPE==='NOMINAL'?'selected':''}>Nominal (Rp)</option>
+        </select>
+      </div>
+      <div>
+        <label>Nilai Diskon</label>
+        <input id="inv_DISC_VALUE" type="number" min="0" value="${Number(booking.DISCOUNT_VALUE)||0}" oninput="updateInvoiceDiscountPreview()">
+      </div>
+      <div class="form-full">
+        <label>Alasan Diskon</label>
+        <input id="inv_DISC_REASON" value="${escapeHtml(booking.DISCOUNT_REASON||'')}" placeholder="Contoh: Kerja sama instansi mitra / promo acara kampus">
+      </div>
+      <div class="form-full"><div id="inv_disc_hint" class="hint" style="background:#F5F6FB;border-radius:8px;padding:8px 10px"></div></div>
+      <div><label>Nominal Tagihan Akhir (Rp) *</label><input id="inv_AMOUNT" type="number" min="0" value="${Number(booking.INVOICE_AMOUNT)||Number(booking.TOTAL_FEE)||0}"></div>
       <div><label>Batas Waktu Bayar *</label><input id="inv_DUE" type="date" value="${defaultDue}"></div>
       <div class="form-full"><label>Catatan / Info Rekening</label><textarea id="inv_NOTE" placeholder="Contoh: Transfer ke BNI 1234567890 a.n. Bendahara Sarpras">${escapeHtml(booking.INVOICE_NOTE||DB.APP_SETTINGS.BANK_INFO||'')}</textarea></div>
     </div>
@@ -3804,6 +3825,36 @@ function openInvoiceForm(id){
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveInvoice('${id}')">💾 Terbitkan Invoice</button>`
   ]);
+  setTimeout(updateInvoiceDiscountPreview,50);
+}
+
+function updateInvoiceDiscountPreview(){
+  if(!CURRENT_INVOICE_BOOKING_ID)return;
+  const booking=DB.BOOKINGS.find(b=>b.ID===CURRENT_INVOICE_BOOKING_ID);
+  const typeEl=document.getElementById('inv_DISC_TYPE');
+  const valueEl=document.getElementById('inv_DISC_VALUE');
+  const amountEl=document.getElementById('inv_AMOUNT');
+  const hint=document.getElementById('inv_disc_hint');
+  if(!booking||!typeEl||!valueEl||!amountEl||!hint)return;
+
+  const base=Number(booking.TOTAL_FEE)||0;
+  const type=typeEl.value;
+  const rawValue=Number(valueEl.value)||0;
+  let discountAmount=0;
+
+  if(type==='PERCENT'){
+    const pct=Math.min(Math.max(rawValue,0),100);
+    discountAmount=Math.round(base*pct/100);
+  }else if(type==='NOMINAL'){
+    discountAmount=Math.min(Math.max(rawValue,0),base);
+  }
+
+  const final=Math.max(base-discountAmount,0);
+  amountEl.value=final;
+
+  hint.innerHTML = type==='NONE'
+    ? 'Tidak ada diskon diterapkan.'
+    : 'Potongan: <b>'+escapeHtml(formatCurrency(discountAmount))+'</b> dari estimasi awal <b>'+escapeHtml(formatCurrency(base))+'</b> → Tagihan akhir: <b>'+escapeHtml(formatCurrency(final))+'</b>';
 }
 async function saveInvoice(id){
   try{
@@ -3814,12 +3865,30 @@ async function saveInvoice(id){
     if(amount<=0||!due){ showToast('Nominal dan batas waktu wajib diisi.','warning'); return; }
     const booking=DB.BOOKINGS.find(b=>b.ID===id);
     if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
+    const discType=getValue('inv_DISC_TYPE')||'NONE';
+    const discValueRaw=Number(getValue('inv_DISC_VALUE'))||0;
+    const discReason=getValue('inv_DISC_REASON');
+
+    if(discType!=='NONE'&&discValueRaw>0&&!discReason){
+      showToast('Alasan diskon wajib diisi kalau memberikan diskon.','warning');
+      return;
+    }
+
+    const base=Number(booking.TOTAL_FEE)||0;
+    let discountAmount=0;
+    if(discType==='PERCENT') discountAmount=Math.round(base*Math.min(Math.max(discValueRaw,0),100)/100);
+    else if(discType==='NOMINAL') discountAmount=Math.min(Math.max(discValueRaw,0),base);
+
+    booking.DISCOUNT_TYPE=discType;
+    booking.DISCOUNT_VALUE=discValueRaw;
+    booking.DISCOUNT_REASON=discReason;
+    booking.DISCOUNT_AMOUNT=discountAmount;
     booking.INVOICE_AMOUNT=amount;
     booking.INVOICE_DUE_AT=due;
     booking.INVOICE_NOTE=note;
     booking.INVOICE_CREATED_AT=nowStr();
     booking.PAYMENT_STATUS='MENUNGGU_PEMBAYARAN';
-    await audit('INVOICE','BOOKINGS',id,'Terbitkan invoice Rp'+amount+' untuk '+booking.USER_NAME);
+    await audit('INVOICE','BOOKINGS',id,'Terbitkan invoice Rp'+amount+' untuk '+booking.USER_NAME+(discountAmount>0?' (diskon Rp'+discountAmount+' - '+discReason+')':''));
     await saveDB();
     closeModal();
     showToast('Invoice diterbitkan. Sampaikan kode booking ke tamu untuk upload bukti transfer.','success');
@@ -3837,7 +3906,8 @@ function openPaymentVerifyForm(id){
 
   openModal('🔍 Verifikasi Pembayaran — '+booking.ITEM_NAME, `
     <div class="kv"><span>Pemohon</span><b>${escapeHtml(booking.USER_NAME)}</b></div>
-    <div class="kv"><span>Nominal Invoice</span><b>${escapeHtml(formatCurrency(booking.INVOICE_AMOUNT||0))}</b></div>
+    ${booking.DISCOUNT_AMOUNT>0?`<div class="kv"><span>Diskon Diberikan</span><b>${escapeHtml(formatCurrency(booking.DISCOUNT_AMOUNT))} (${escapeHtml(booking.DISCOUNT_REASON||'-')})</b></div>`:''}
+    <div class="kv"><span>Nominal Invoice (setelah diskon)</span><b>${escapeHtml(formatCurrency(booking.INVOICE_AMOUNT||0))}</b></div>
     <div class="kv"><span>Diunggah</span><b>${escapeHtml(booking.PROOF_UPLOADED_AT||'-')}</b></div>
     <div style="margin-top:10px">${preview}</div>
     <div class="form-group" style="margin-top:12px"><label>Catatan (wajib jika ditolak)</label><textarea id="pv_NOTE"></textarea></div>
@@ -4511,7 +4581,9 @@ function renderGuestStatusDetail(booking){
     actionHtml=`
       <div class="card" style="box-shadow:none;border:1px solid var(--border)">
         <div class="card-title">🧾 Invoice</div>
-        <div class="kv"><span>Nominal</span><b>${escapeHtml(formatCurrency(booking.INVOICE_AMOUNT||0))}</b></div>
+        ${booking.DISCOUNT_AMOUNT>0?`<div class="kv"><span>Estimasi Awal</span><b>${escapeHtml(formatCurrency(booking.TOTAL_FEE||0))}</b></div>
+        <div class="kv"><span>Diskon</span><b>-${escapeHtml(formatCurrency(booking.DISCOUNT_AMOUNT))} (${escapeHtml(booking.DISCOUNT_REASON||'-')})</b></div>`:''}
+        <div class="kv"><span>Nominal Tagihan</span><b>${escapeHtml(formatCurrency(booking.INVOICE_AMOUNT||0))}</b></div>
         <div class="kv"><span>Batas Waktu Bayar</span><b>${escapeHtml(booking.INVOICE_DUE_AT||'-')}</b></div>
         ${booking.INVOICE_NOTE?`<div class="kv"><span>Catatan</span><b>${escapeHtml(booking.INVOICE_NOTE)}</b></div>`:''}
         ${booking.PROOF_REJECT_NOTE?`<div class="error">Bukti sebelumnya ditolak: ${escapeHtml(booking.PROOF_REJECT_NOTE)}</div>`:''}
