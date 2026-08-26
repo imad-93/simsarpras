@@ -759,6 +759,7 @@ const PERMISSIONS = [
   ['booking.approve','Menyetujui/Menolak Booking','booking'],
   ['booking.cancel','Membatalkan Booking','booking'],
   ['booking.checkout','Checkout & Pengembalian Barang (Scan Barcode)','booking'],
+  ['booking.delete','Menghapus Data Booking Permanen (Khusus Admin)','booking'],
   ['stock.view','Melihat Stok Barang Habis Pakai','stock'],
   ['stock.take','Mengajukan Pengambilan Barang Habis Pakai','stock'],
   ['stock.approve','Menyetujui & Memproses Pengambilan Barang','stock'],
@@ -3304,10 +3305,12 @@ function renderBookingTable(){
 
   const canApprove=hasPermission(STATE.currentUser,'booking.approve');
   const canCancel=hasPermission(STATE.currentUser,'booking.cancel');
-
+  const canDelete=hasPermission(STATE.currentUser,'booking.delete');
+  
   document.getElementById('bookingTable').innerHTML=renderTableHtml(
     rows,
-    [
+        [
+      ['ID','Kode Booking'],
       ['ITEM_NAME','Item'],
       ['USER_NAME','Pemohon'],
       ['IS_GUEST','Tipe'],
@@ -3317,6 +3320,7 @@ function renderBookingTable(){
       ['DURATION_HOURS','Jam'],
       ['START_TIME','Mulai'],
       ['END_TIME','Selesai'],
+      ['FACILITY_LIST','Fasilitas Tambahan'],
       ['STATUS','Status'],
       ['PAYMENT_STATUS','Pembayaran'],
       ['TOTAL_FEE','Total']
@@ -3326,12 +3330,13 @@ function renderBookingTable(){
       const isOwner=STATE.currentUser.ID&&STATE.currentUser.ID===row.USER_ID;
 
       if(type==='ASSET')html+=`<button class="btn btn-light btn-sm" onclick='assetBookingDetail(${safeJson(row)})'>🔍</button>`;
+      html+=`<button class="btn btn-light btn-sm" onclick="showBookingQr('${row.ID}')" title="Lihat QR Booking">🔳</button>`;
 
       if(String(row.IS_GUEST).toUpperCase()==='TRUE'&&row.GUEST_CONTACT){
         html+=`<button class="btn btn-light btn-sm" onclick="alert('Kontak tamu: ${escapeHtml(row.GUEST_CONTACT)}\\nInstansi/Keperluan: ${escapeHtml(row.GUEST_INSTANSI||'-')}')" title="Lihat kontak tamu">📞</button>`;
       }
 
-            const isGuestRow=String(row.IS_GUEST).toUpperCase()==='TRUE';
+      const isGuestRow=String(row.IS_GUEST).toUpperCase()==='TRUE';
       const payStatus=row.PAYMENT_STATUS||(isGuestRow?'BELUM_INVOICE':'GRATIS');
 
       if(row.STATUS==='MENUNGGU'&&canApprove){
@@ -3352,6 +3357,10 @@ function renderBookingTable(){
 
       if(row.STATUS==='DISETUJUI'&&type==='ROOM'&&canApprove){
         html+=`<button class="btn btn-light btn-sm" onclick="setBookingStatus('${row.ID}','SELESAI')">Selesai</button>`;
+      }
+
+      if(canDelete){
+        html+=`<button class="btn btn-danger btn-sm" onclick="deleteBooking('${row.ID}')" title="Hapus permanen (khusus Admin)">🗑️</button>`;
       }
 
       if(!html)html='<span style="color:#9AA3B5;font-size:11px">-</span>';
@@ -3789,6 +3798,19 @@ async function setBookingStatus(id,status){
     await audit('STATUS','BOOKINGS',id,'Status booking -> '+status);
     await saveDB();
     showToast('Status booking diperbarui.','success');
+    renderBookingTable();
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+async function deleteBooking(id){
+  try{
+    requirePerm('booking.delete');
+    const booking=DB.BOOKINGS.find(b=>b.ID===id);
+    if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
+    if(!confirm('Hapus data booking "'+booking.ITEM_NAME+'" ('+booking.ID+') secara permanen?\nTindakan ini akan menghapus riwayat invoice & bukti transfer terkait dan tidak dapat dibatalkan.')) return;
+    DB.BOOKINGS = DB.BOOKINGS.filter(x=>x.ID!==id);
+    await audit('DELETE','BOOKINGS',id,'Hapus data booking '+booking.ITEM_NAME+' oleh '+(booking.USER_NAME||'-'));
+    await saveDB();
+    showToast('Data booking berhasil dihapus.','success');
     renderBookingTable();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
@@ -5617,6 +5639,39 @@ function showUnitQr(unitId){
     }
     new QRCode(target, { text: row.INVENTORY_NUMBER || row.ID, width:200, height:200, correctLevel: QRCode.CorrectLevel.M });
   },50);
+}
+function showBookingQr(bookingId){
+  const booking=DB.BOOKINGS.find(b=>b.ID===bookingId);
+  if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
+  openModal('🔳 QR Kode Booking', `
+    <div style="text-align:center">
+      <div id="bookingQrTarget" style="display:inline-block;padding:16px;background:#fff;border:1px solid var(--border);border-radius:12px"></div>
+      <div style="margin-top:14px;font-weight:800;font-size:14px">${escapeHtml(booking.ITEM_NAME)}</div>
+      <div style="color:var(--muted);font-size:12px;margin-top:2px;letter-spacing:.4px">${escapeHtml(booking.ID)}</div>
+      <div style="color:var(--muted);font-size:11px;margin-top:6px">${escapeHtml(booking.USER_NAME||'-')}</div>
+    </div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Tutup</button>`,
+    `<button class="btn btn-primary" onclick="downloadBookingQr('${booking.ID}')">⬇️ Download PNG</button>`
+  ]);
+  setTimeout(function(){
+    const target=document.getElementById('bookingQrTarget');
+    if(!target)return;
+    target.innerHTML='';
+    if(typeof QRCode==='undefined'){
+      target.innerHTML='<div style="color:var(--danger);font-size:12px">Pustaka QR gagal dimuat.</div>';
+      return;
+    }
+    new QRCode(target,{text:booking.ID,width:190,height:190,correctLevel:QRCode.CorrectLevel.M});
+  },50);
+}
+function downloadBookingQr(bookingId){
+  const canvas=document.querySelector('#bookingQrTarget canvas');
+  if(!canvas){ showToast('QR belum siap, coba lagi.','warning'); return; }
+  const link=document.createElement('a');
+  link.download='QR-Booking-'+bookingId+'.png';
+  link.href=canvas.toDataURL('image/png');
+  link.click();
 }
 function downloadUnitQr(unitId){
   const canvas = document.querySelector('#qrGenTarget canvas');
