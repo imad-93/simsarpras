@@ -851,7 +851,8 @@ function TABLE_CONFIGS(){
         {key:'RENTAL_FEE',label:'Tarif Sewa (Rp/pemakaian)',type:'number'},
         {key:'RENTAL_UNIT',label:'Satuan Tarif',type:'select',options:[['HARI','Per Hari'],['JAM','Per Jam']],default:'HARI'},
         {key:'CAN_BOOK',label:'Bisa Dibooking',type:'select',options:[['TRUE','Bisa Dibooking'],['FALSE','Tidak Bisa Dibooking']],default:'TRUE'},
-        {key:'FACILITIES',label:'Fasilitas',full:true,placeholder:'AC, Proyektor, Sound system, ...'},
+        {key:'FACILITIES',label:'Fasilitas Fisik di Ruangan (info umum)',full:true,placeholder:'AC, Proyektor, Sound system, ... (sekadar info, bukan penentu biaya)'},
+        {key:'INCLUDED_FACILITIES',label:'Fasilitas yang SUDAH TERMASUK dalam Tarif Sewa',type:'textarea',full:true,placeholder:'Contoh: AC, Proyektor, Sound System sudah termasuk. Kosongkan jika sewa murni ruangan tanpa fasilitas apapun.'},
         {key:'STATUS',label:'Status',type:'select',options:[['TERSEDIA','Tersedia'],['MAINTENANCE','Maintenance'],['NONAKTIF','Nonaktif']],default:'TERSEDIA'},
         {key:'DESCRIPTION',label:'Deskripsi',type:'textarea',full:true}
       ]
@@ -938,6 +939,7 @@ async function buildDefaultDB(){
       ENABLE_MAINTENANCE:'TRUE',
       ENABLE_REPORT:'TRUE',
       ENABLE_STOCK:'TRUE',
+      BANK_INFO:'',
       DEFAULT_BASE_FEE:0,
       DEFAULT_ASSET_BASE_FEE:0,
       DEFAULT_FACILITY_FEE:0,
@@ -1067,9 +1069,11 @@ function migrateDB(){
   if(DB.SEQ.STOCK_TAKEOUTS===undefined)DB.SEQ.STOCK_TAKEOUTS=0;
   if(!DB.APP_SETTINGS)DB.APP_SETTINGS={};
   if(DB.APP_SETTINGS.ENABLE_STOCK===undefined)DB.APP_SETTINGS.ENABLE_STOCK='TRUE';
+  if(DB.APP_SETTINGS.BANK_INFO===undefined)DB.APP_SETTINGS.BANK_INFO='';
   (DB.ROOMS||[]).forEach(function(room){
     room.RENTAL_FEE=Number(room.RENTAL_FEE)||0;
     room.RENTAL_UNIT=String(room.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+    if(room.INCLUDED_FACILITIES===undefined)room.INCLUDED_FACILITIES='';
   });
   (DB.ASSETS||[]).forEach(function(asset){
     if(asset.RENTAL_FEE===undefined)asset.RENTAL_FEE=0;
@@ -3348,6 +3352,16 @@ function renderBookingTable(){
     }
   );
 }
+function onInternalRoomChange(){
+  const id=getValue('b_ITEM_ID');
+  const room=DB.ROOMS.find(r=>r.ID===id);
+  const el=document.getElementById('b_included_info');
+  if(!el)return;
+  if(!room){ el.innerHTML=''; return; }
+  el.innerHTML = room.INCLUDED_FACILITIES
+    ? '📦 <b>Sudah termasuk dalam tarif:</b> '+escapeHtml(room.INCLUDED_FACILITIES)+' <span style="color:#16A34A">(gratis untuk internal)</span>'
+    : '🏠 Sewa ruangan murni, tidak ada fasilitas tambahan yang sudah termasuk. <span style="color:#16A34A">(gratis untuk internal)</span>';
+}
 /* --- Room booking form (unchanged flow) --- */
 function bookingForm(type){
   if(type==='ASSET'){
@@ -3360,13 +3374,13 @@ function bookingForm(type){
     <div class="form-grid">
       <div class="form-full">
         <label>Ruangan *</label>
-        <select id="b_ITEM_ID">${selectOptions(bookableRooms,'ID','NAME',null,true)}</select>
-      </div>
+        <select id="b_ITEM_ID" onchange="onInternalRoomChange()">${selectOptions(bookableRooms,'ID','NAME',null,true)}</select>      </div>
       <div>
         <label>Tanggal *</label>
         <input id="b_DATE" type="date" min="${todayStr()}">
       </div>
       <div></div>
+      <div class="form-full"><div id="b_included_info" class="hint" style="background:#F5F6FB;border-radius:8px;padding:8px 10px"></div></div>
       <div>
         <label>Jam Mulai *</label>
         <input id="b_START_TIME" type="time">
@@ -3385,6 +3399,7 @@ function bookingForm(type){
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveBooking('ROOM')" ${!bookableRooms.length?'disabled':''}>📤 Ajukan</button>`
   ]);
+setTimeout(onInternalRoomChange,50);
 }
 
 async function saveBooking(type){
@@ -3783,7 +3798,7 @@ function openInvoiceForm(id){
     <div class="form-grid">
       <div><label>Nominal Tagihan (Rp) *</label><input id="inv_AMOUNT" type="number" min="0" value="${Number(booking.TOTAL_FEE)||0}"></div>
       <div><label>Batas Waktu Bayar *</label><input id="inv_DUE" type="date" value="${defaultDue}"></div>
-      <div class="form-full"><label>Catatan / Info Rekening</label><textarea id="inv_NOTE" placeholder="Contoh: Transfer ke BNI 1234567890 a.n. Bendahara Sarpras">${escapeHtml(booking.INVOICE_NOTE||'')}</textarea></div>
+      <div class="form-full"><label>Catatan / Info Rekening</label><textarea id="inv_NOTE" placeholder="Contoh: Transfer ke BNI 1234567890 a.n. Bendahara Sarpras">${escapeHtml(booking.INVOICE_NOTE||DB.APP_SETTINGS.BANK_INFO||'')}</textarea></div>
     </div>
   `,[
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
@@ -3953,6 +3968,7 @@ function renderGuestRoomForm(){
         <label>Tarif</label>
         <input id="gr_RATE" type="number" min="0" value="0" readonly>
       </div>
+      <div class="form-full"><div id="gr_included_info" class="hint" style="background:#F5F6FB;border-radius:8px;padding:8px 10px"></div></div>
       ${facAssets.length?`<div class="form-full">
         <label>Fasilitas Tambahan (biaya berlaku)</label>
         <div id="gr_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
@@ -3994,6 +4010,12 @@ function onGuestRoomChange(){
   if(unitInput)unitInput.value=unit;
   if(unitDisplay)unitDisplay.value=unit==='HARI'?'Per Hari':'Per Jam';
   if(rateInput)rateInput.value=rate;
+  const includedEl=document.getElementById('gr_included_info');
+  if(includedEl){
+    includedEl.innerHTML = room.INCLUDED_FACILITIES
+      ? '📦 <b>Sudah termasuk dalam tarif:</b> '+escapeHtml(room.INCLUDED_FACILITIES)
+      : '🏠 Sewa ruangan murni (tidak ada fasilitas tambahan yang sudah termasuk).';
+  }
 
   if(startTimeWrap)startTimeWrap.style.display=unit==='JAM'?'block':'none';
   if(endTimeWrap)endTimeWrap.style.display=unit==='JAM'?'block':'none';
@@ -5329,6 +5351,10 @@ function renderApplicationSettings(){
         <div class="form-group"><label>Nama Aplikasi</label><input id="s_APP_NAME" value="${escapeHtml(s.APP_NAME)}"></div>
         <div class="form-group"><label>Deskripsi</label><textarea id="s_APP_DESCRIPTION">${escapeHtml(s.APP_DESCRIPTION)}</textarea></div>
         <div class="form-group"><label>Versi</label><input id="s_APP_VERSION" value="${escapeHtml(s.APP_VERSION)}"></div>
+        <div class="form-group"><label>Info Rekening / Pembayaran (default invoice)</label>
+          <textarea id="s_BANK_INFO" placeholder="Contoh: Transfer ke BNI 1234567890 a.n. Bendahara Sarpras, lalu konfirmasi via kode booking">${escapeHtml(s.BANK_INFO||'')}</textarea>
+          <div class="hint">Teks ini otomatis muncul sebagai draf catatan tiap kali admin membuat invoice baru untuk tamu.</div>
+        </div>
         <button class="btn btn-primary btn-block" onclick="saveAppSettings()">💾 Simpan Pengaturan</button>
       </div>
       <div class="card">
@@ -5361,6 +5387,7 @@ async function saveAppSettings(){
     DB.APP_SETTINGS.APP_NAME = getValue('s_APP_NAME') || 'SIM-SARPRAS';
     DB.APP_SETTINGS.APP_DESCRIPTION = getValue('s_APP_DESCRIPTION');
     DB.APP_SETTINGS.APP_VERSION = getValue('s_APP_VERSION') || '1.0.0';
+    DB.APP_SETTINGS.BANK_INFO = getValue('s_BANK_INFO')||'';
     await audit('UPDATE','APP_SETTINGS','','Update identitas aplikasi');
     await saveDB();
     showToast('Pengaturan aplikasi disimpan.','success');
