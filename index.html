@@ -4118,7 +4118,17 @@ function renderGuestRoomFacilities(room){
   const wrap=document.getElementById('gr_facilities_wrap');
   const list=document.getElementById('gr_facilities_list');
   if(!wrap||!list)return;
-  if(!room){ wrap.style.display='none'; list.innerHTML=''; return; }
+
+  if(!room){
+    wrap.style.display='none';
+    list.innerHTML='';
+    wrap.dataset.roomId='';
+    return;
+  }
+
+  // Ruangan belum berganti dari render terakhir -> JANGAN render ulang,
+  // supaya centang yang baru saja diklik tidak ikut ter-reset.
+  if(wrap.dataset.roomId===room.ID) return;
 
   const facAssets=DB.ASSETS.filter(function(a){
     if(String(a.IS_FACILITY).toUpperCase()!=='TRUE')return false;
@@ -4126,6 +4136,8 @@ function renderGuestRoomFacilities(room){
     if(mobility==='PINDAH')return true; // portable, tersedia untuk ruangan manapun
     return !a.FACILITY_ROOM_ID || a.FACILITY_ROOM_ID===room.ID; // TETAP: hanya kalau dikunci ke ruangan ini, atau belum diatur relasinya
   });
+
+  wrap.dataset.roomId=room.ID;
 
   if(!facAssets.length){
     wrap.style.display='none';
