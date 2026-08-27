@@ -211,6 +211,10 @@ tbody tr:hover{background:#FAFBFE}
   .user-role{display:none}
   .perm-grid{grid-template-columns:1fr}
 }
+.facility-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.facility-chip{display:flex;align-items:center;gap:6px;white-space:nowrap;background:#F5F6FB;border:1px solid var(--border);border-radius:999px;padding:7px 13px;font-size:12px;font-weight:600;color:#3A4258;cursor:pointer}
+.facility-chip input{width:auto;margin:0}
+  
 </style>
 </head>
 <body>
@@ -1087,6 +1091,8 @@ function migrateDB(){
     if(asset.RENTAL_FEE===undefined)asset.RENTAL_FEE=0;
     if(asset.RENTAL_UNIT===undefined)asset.RENTAL_UNIT='HARI';
     asset.RENTAL_UNIT=String(asset.RENTAL_UNIT).toUpperCase()==='JAM'?'JAM':'HARI';
+    if(asset.FACILITY_MOBILITY===undefined)asset.FACILITY_MOBILITY='TETAP';
+    if(asset.FACILITY_ROOM_ID===undefined)asset.FACILITY_ROOM_ID='';
   });
 
   (DB.ASSET_UNITS||[]).forEach(function(unit){
@@ -2511,6 +2517,17 @@ function assetForm(row){
       <div id="f_rentalUnitWrap"><label>Satuan Tarif</label><select id="f_RENTAL_UNIT"><option value="HARI" ${String(row.RENTAL_UNIT||'HARI').toUpperCase()==='HARI'?'selected':''}>Per Hari</option><option value="JAM" ${String(row.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'selected':''}>Per Jam</option></select></div>
       <div style="display:flex;align-items:flex-end"><label class="checkline" style="margin:0"><input id="f_IS_FACILITY" type="checkbox" onchange="onAssetIsFacilityChange()"> Fasilitas Tambahan</label></div>
       <div id="f_facilityFeeWrap"><label>Biaya Tambahan Pemakaian Fasilitas (Rp)</label><input id="f_FACILITY_FEE" type="number" min="0" value="${escapeHtml(row.FACILITY_FEE||0)}"></div>
+      <div id="f_facilityMobilityWrap"><label>Sifat Fasilitas</label>
+        <select id="f_FACILITY_MOBILITY" onchange="onFacilityMobilityChange()">
+          <option value="TETAP" ${String(row.FACILITY_MOBILITY||'TETAP')==='TETAP'?'selected':''}>📌 Menempel di Ruangan (tidak berpindah)</option>
+          <option value="PINDAH" ${row.FACILITY_MOBILITY==='PINDAH'?'selected':''}>🔄 Bisa Berpindah (portable, contoh: kamera)</option>
+        </select>
+      </div>
+      <div id="f_facilityRoomWrap">
+        <label>Terpasang di Ruangan</label>
+        <select id="f_FACILITY_ROOM_ID">${selectOptions(DB.ROOMS,'ID','NAME',row.FACILITY_ROOM_ID,true)}</select>
+        <div class="hint">Fasilitas ini hanya akan muncul sebagai pilihan saat tamu/petugas booking ruangan ini. Kosongkan kalau ingin tetap tersedia untuk semua ruangan (mode lama).</div>
+      </div>
       <div><label>Dimensi</label><input id="f_DIMENSI" value="${escapeHtml(row.DIMENSI||'')}" placeholder="Contoh: 45x50x90 cm"></div>
       <div></div>
       <div class="form-full"><label>Spesifikasi Barang</label><textarea id="f_SPESIFIKASI" placeholder="Contoh: Rangka besi, dudukan plastik, kapasitas beban 100kg">${escapeHtml(row.SPESIFIKASI||'')}</textarea></div>
@@ -2553,6 +2570,15 @@ function onAssetCanLendChange(){
 function onAssetIsFacilityChange(){
   const on = document.getElementById('f_IS_FACILITY').checked;
   document.getElementById('f_facilityFeeWrap').style.display = on ? '' : 'none';
+  const mobilityWrap = document.getElementById('f_facilityMobilityWrap');
+  if(mobilityWrap) mobilityWrap.style.display = on ? '' : 'none';
+  onFacilityMobilityChange();
+}
+function onFacilityMobilityChange(){
+  const isFacilityOn = document.getElementById('f_IS_FACILITY').checked;
+  const mobility = getValue('f_FACILITY_MOBILITY');
+  const roomWrap = document.getElementById('f_facilityRoomWrap');
+  if(roomWrap) roomWrap.style.display = (isFacilityOn && mobility==='TETAP') ? '' : 'none';
 }
 async function saveAssetForm(id){
   try{
@@ -2573,6 +2599,8 @@ async function saveAssetForm(id){
       FOTO_NOTA_URL:getValue('f_FOTO_NOTA_URL'),
       FOTO_BARANG_URL:getValue('f_FOTO_BARANG_URL'),
       FACILITY_FEE:Number(getValue('f_FACILITY_FEE'))||0,
+      FACILITY_MOBILITY:getValue('f_FACILITY_MOBILITY')||'TETAP',
+      FACILITY_ROOM_ID: getValue('f_FACILITY_MOBILITY')==='TETAP' ? getValue('f_FACILITY_ROOM_ID') : '',
       IS_FACILITY:document.getElementById('f_IS_FACILITY').checked?'TRUE':'FALSE',
       CAN_LEND:document.getElementById('f_CAN_LEND').checked?'TRUE':'FALSE',
       RENTAL_FEE:Number(getValue('f_RENTAL_FEE'))||0,
@@ -4032,7 +4060,6 @@ function calculateBookingFee(rate,unit,startDate,endDate,startTime,endTime){
 }
 function renderGuestRoomForm(){
   const body=document.getElementById('guestFormBody');
-  const facAssets=DB.ASSETS.filter(a=>String(a.IS_FACILITY).toUpperCase()==='TRUE');
   const bookableRooms=DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'&&String(r.CAN_BOOK||'TRUE').toUpperCase()!=='FALSE');
 
   body.innerHTML=`
@@ -4067,12 +4094,11 @@ function renderGuestRoomForm(){
         <input id="gr_RATE" type="number" min="0" value="0" readonly>
       </div>
       <div class="form-full"><div id="gr_included_info" class="hint" style="background:#F5F6FB;border-radius:8px;padding:8px 10px"></div></div>
-      ${facAssets.length?`<div class="form-full">
+      <div class="form-full" id="gr_facilities_wrap" style="display:none">
         <label>Fasilitas Tambahan (biaya berlaku)</label>
-        <div id="gr_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
-          ${facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="gr_fac_chk" type="checkbox" data-fee="${a.FACILITY_FEE||0}" value="${a.ID}" onchange="onGuestRoomChange()"> ${escapeHtml(a.NAME)} (${escapeHtml(formatCurrency(a.FACILITY_FEE||0))})</label>`).join('')}
-        </div>
-      </div>`:''}
+        <div id="gr_facilities_list" class="facility-chips"></div>
+        <div class="hint" style="margin-top:6px">📌 Menempel di ruangan ini saja · 🔄 Bisa berpindah antar ruangan (portable, contoh: kamera)</div>
+      </div>
       <div class="form-full">
         <label>Tujuan / Keperluan *</label>
         <textarea id="gr_PURPOSE" placeholder="Contoh: Rapat koordinasi"></textarea>
@@ -4088,6 +4114,32 @@ function renderGuestRoomForm(){
 
   setTimeout(onGuestRoomChange,30);
 }
+function renderGuestRoomFacilities(room){
+  const wrap=document.getElementById('gr_facilities_wrap');
+  const list=document.getElementById('gr_facilities_list');
+  if(!wrap||!list)return;
+  if(!room){ wrap.style.display='none'; list.innerHTML=''; return; }
+
+  const facAssets=DB.ASSETS.filter(function(a){
+    if(String(a.IS_FACILITY).toUpperCase()!=='TRUE')return false;
+    const mobility=String(a.FACILITY_MOBILITY||'TETAP').toUpperCase();
+    if(mobility==='PINDAH')return true; // portable, tersedia untuk ruangan manapun
+    return !a.FACILITY_ROOM_ID || a.FACILITY_ROOM_ID===room.ID; // TETAP: hanya kalau dikunci ke ruangan ini, atau belum diatur relasinya
+  });
+
+  if(!facAssets.length){
+    wrap.style.display='none';
+    list.innerHTML='';
+    return;
+  }
+
+  wrap.style.display='';
+  list.innerHTML=facAssets.map(function(a){
+    const mobility=String(a.FACILITY_MOBILITY||'TETAP').toUpperCase();
+    const icon=mobility==='PINDAH'?'🔄':'📌';
+    return `<label class="facility-chip"><input class="gr_fac_chk" type="checkbox" data-fee="${a.FACILITY_FEE||0}" value="${a.ID}" onchange="onGuestRoomChange()"> ${icon} ${escapeHtml(a.NAME)} — ${escapeHtml(formatCurrency(a.FACILITY_FEE||0))}</label>`;
+  }).join('');
+}
 function onGuestRoomChange(){
   const id=getValue('gr_ITEM_ID');
   const room=DB.ROOMS.find(r=>r.ID===id);
@@ -4101,6 +4153,8 @@ function onGuestRoomChange(){
   const endTimeWrap=document.getElementById('gr_end_time_wrap');
 
   if(!hint||!room)return;
+
+  renderGuestRoomFacilities(room);
 
   const rate=Number(room.RENTAL_FEE)||0;
   const unit=String(room.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
@@ -4173,9 +4227,10 @@ function renderGuestAssetForm(){
     <div id="ga_cart_list" style="margin:10px 0"></div>
     ${facAssets.length?`<div class="form-group">
       <label>Fasilitas Tambahan (biaya berlaku)</label>
-      <div id="ga_facilities_list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
-        ${facAssets.map(a=>`<label style="display:flex;gap:8px;align-items:center"><input class="ga_fac_chk" type="checkbox" data-fee="${a.FACILITY_FEE||0}" value="${a.ID}" onchange="renderGuestCart()"> ${escapeHtml(a.NAME)} (${escapeHtml(formatCurrency(a.FACILITY_FEE||0))})</label>`).join('')}
+      <div id="ga_facilities_list" class="facility-chips">
+        ${facAssets.map(a=>`<label class="facility-chip"><input class="ga_fac_chk" type="checkbox" data-fee="${a.FACILITY_FEE||0}" value="${a.ID}" onchange="renderGuestCart()"> ${String(a.FACILITY_MOBILITY).toUpperCase()==='PINDAH'?'🔄':'📌'} ${escapeHtml(a.NAME)} — ${escapeHtml(formatCurrency(a.FACILITY_FEE||0))}</label>`).join('')}
       </div>
+      <div class="hint" style="margin-top:6px">📌 Menempel di ruangan (tidak berpindah) · 🔄 Bisa berpindah antar ruangan (portable, contoh: kamera)</div>
     </div>`:''}
     <div class="form-group"><label>Tujuan / Keperluan *</label><textarea id="ga_PURPOSE" placeholder="Contoh: Peminjaman untuk acara seminar"></textarea></div>
   `;
