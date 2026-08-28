@@ -787,7 +787,7 @@ const DEFAULT_ROLES = [
       'booking.view','booking.approve','booking.cancel','booking.checkout','stock.view','stock.take','stock.approve','report.view','report.assign','report.close',
       'maintenance.view','maintenance.create','maintenance.manage','audit.view']},
   {CODE:'PELAKSANA',NAME:'Pelaksana',DESCRIPTION:'Teknisi / petugas lapangan yang mengerjakan laporan & maintenance.',
-    PERMS:['dashboard.view','asset_unit.view','room.view','stock.view','stock.take','report.view','report.process','maintenance.view','maintenance.manage']},
+    PERMS:['dashboard.view','asset_unit.view','room.view','booking.view','booking.checkout','stock.view','stock.take','report.view','report.process','maintenance.view','maintenance.manage']},
   {CODE:'DOSEN',NAME:'Dosen',DESCRIPTION:'Pengguna sivitas akademik — dosen.',
     PERMS:['dashboard.view','room.view','booking.view','booking.create','stock.view','stock.take','report.view','report.create']},
   {CODE:'MAHASISWA',NAME:'Mahasiswa',DESCRIPTION:'Pengguna sivitas akademik — mahasiswa.',
@@ -2059,7 +2059,7 @@ function renderTableHtml(rows,columns,renderActions){
 function formatCell(row,key){
   const value = row[key];
   if(key==='ACTIVE' || key==='STATUS' || key==='PAYMENT_STATUS') return statusBadge(value||'BELUM_INVOICE');
-  if(key==='UNIT_PRICE' || key==='TOTAL_FEE' || key==='RENTAL_FEE' || key==='BASE_FEE' || key==='FACILITY_FEE') return escapeHtml(formatCurrency(value));
+  if(key==='UNIT_PRICE' || key==='TOTAL_FEE' || key==='RENTAL_FEE' || key==='BASE_FEE' || key==='FACILITY_FEE' || key==='COST') return escapeHtml(formatCurrency(value));
   if(key==='BUILDING_ID') return escapeHtml(nameOf('BUILDINGS',value) || '-');
   if(key==='ROOM_ID') return escapeHtml(nameOf('ROOMS',value) || '-');
   if(key==='CATEGORY_ID') return escapeHtml(nameOf('ASSET_CATEGORIES',value) || '-');
@@ -3129,7 +3129,7 @@ function renderBookings(type){
       </div>
       <div id="bookingTable"></div>
     </div>
-    ${type==='ASSET'?`
+    ${type==='ASSET'&&hasPermission(STATE.currentUser,'booking.checkout')?`
       <div class="card">
         <div class="card-title">🔦 Pengambilan / Pengembalian Barang</div>
         <div class="hint" style="margin-bottom:12px">Scan nomor inventaris/barcode barang. <b>Barang tersedia</b> → scan untuk mengeluarkan barang. <b>Barang sedang dipinjam</b> → scan untuk mengembalikan barang.</div>
@@ -3152,7 +3152,7 @@ function renderBookings(type){
   renderBookingStatusTabs();
   renderBookingTable();
 
-  if(type==='ASSET'){
+  if(type==='ASSET'&&hasPermission(STATE.currentUser,'booking.checkout')){
     const input=document.getElementById('co_BARCODE');
     if(input){
       input.addEventListener('keydown',function(e){
@@ -5208,8 +5208,8 @@ function renderMaintenanceTable(){
   if(keyword) rows = rows.filter(r=>Object.values(r).join(' ').toLowerCase().includes(keyword));
   const canManage = hasPermission(STATE.currentUser,'maintenance.manage');
   document.getElementById('maintTable').innerHTML = renderTableHtml(rows,
-    [['NUMBER','Nomor'],['TYPE_NAME','Jenis'],['ASSET_NAME','Aset/Lokasi'],['ASSIGNED_NAME','Pelaksana'],['SCHEDULE_DATE','Tanggal'],['STATUS','Status']],
-    function(row){
+    [['NUMBER','Nomor'],['TYPE_NAME','Jenis'],['ASSET_NAME','Aset/Lokasi'],['ASSIGNED_NAME','Pelaksana'],['SCHEDULE_DATE','Tgl Mulai'],['SCHEDULE_END_DATE','Estimasi Selesai'],['COST','Biaya'],['STATUS','Status']],
+  function(row){
       if(!canManage) return '<span style="color:#9AA3B5;font-size:11px">-</span>';
       let html='';
       if(row.STATUS==='TERJADWAL') html += `<button class="btn btn-light btn-sm" onclick="maintStatus('${row.ID}','DIPROSES')">Mulai</button>`;
@@ -5262,7 +5262,9 @@ function maintenanceForm(){
   openModal('Jadwalkan Maintenance', `
     <div class="form-grid">
       <div><label>Jenis *</label><select id="m_TYPE_ID">${selectOptions(DB.MAINTENANCE_TYPES,'ID','NAME',null,true)}</select></div>
-      <div><label>Tanggal *</label><input id="m_DATE" type="date" min="${todayStr()}"></div>
+      <div><label>Tanggal Mulai *</label><input id="m_DATE" type="date" min="${todayStr()}"></div>
+      <div><label>Tanggal Selesai (Estimasi)</label><input id="m_END_DATE" type="date" min="${todayStr()}"></div>
+      <div><label>Estimasi Biaya (Rp)</label><input id="m_COST" type="number" min="0" value="0"></div>
       <div class="form-full">
         <label>Target Maintenance *</label>
         <select id="m_TARGET_TYPE" onchange="onMaintenanceTargetTypeChange()">
@@ -5271,8 +5273,10 @@ function maintenanceForm(){
         </select>
       </div>
       <div class="form-full" id="m_unit_wrap">
-        <label>Unit Inventaris *</label>
-        <select id="m_ASSET_UNIT_ID">${selectOptions(DB.ASSET_UNITS,'ID','INVENTORY_NUMBER',null,true)}</select>
+        <label>Aset</label>
+        <select id="m_ASSET_SELECT" onchange="onMaintenanceAssetChange()">${selectOptions(DB.ASSETS,'ID','NAME',null,true)}</select>
+        <label style="margin-top:8px">Unit Inventaris *</label>
+        <select id="m_ASSET_UNIT_ID"><option value="">— Pilih Aset dulu —</option></select>
         <div class="hint">Atau tulis manual di kolom catatan kalau bukan unit yang terdaftar.</div>
       </div>
       <div class="form-full" id="m_room_wrap" style="display:none">
@@ -5289,6 +5293,13 @@ function maintenanceForm(){
     `<button class="btn btn-primary" onclick="saveMaintenance()">💾 Simpan</button>`
   ]);
   setTimeout(onMaintenanceTargetTypeChange,50);
+}
+function onMaintenanceAssetChange(){
+  const assetId=getValue('m_ASSET_SELECT');
+  const select=document.getElementById('m_ASSET_UNIT_ID');
+  if(!select)return;
+  const units=DB.ASSET_UNITS.filter(u=>!assetId||u.ASSET_ID===assetId);
+  select.innerHTML = assetId ? selectOptions(units,'ID','INVENTORY_NUMBER',null,true) : '<option value="">— Pilih Aset dulu —</option>';
 }
 function onMaintenanceTargetTypeChange(){
   const type=getValue('m_TARGET_TYPE');
@@ -5310,9 +5321,10 @@ function onMaintenanceRoomChange(){
 async function saveMaintenance(){
   try{
     requirePerm('maintenance.create');
-    const typeId = getValue('m_TYPE_ID'), date = getValue('m_DATE'), assignedTo = getValue('m_ASSIGNED_TO'), note = getValue('m_NOTE');
+    const typeId = getValue('m_TYPE_ID'), date = getValue('m_DATE'), endDate = getValue('m_END_DATE'), cost = Number(getValue('m_COST'))||0, assignedTo = getValue('m_ASSIGNED_TO'), note = getValue('m_NOTE');
     const targetType = getValue('m_TARGET_TYPE') || 'UNIT';
-    if(!typeId || !date){ showToast('Jenis dan tanggal wajib diisi.','warning'); return; }
+    if(!typeId || !date){ showToast('Jenis dan tanggal mulai wajib diisi.','warning'); return; }
+    if(endDate && endDate<date){ showToast('Tanggal selesai tidak boleh lebih kecil dari tanggal mulai.','warning'); return; }
 
     let unitId='', roomId='', assetName='-';
 
@@ -5337,11 +5349,12 @@ async function saveMaintenance(){
       ROOM_ID:roomId,
       ASSET_NAME:assetName,
       ASSIGNED_TO:assignedTo, ASSIGNED_NAME:nameOf('USERS',assignedTo),
-      SCHEDULE_DATE:date, STATUS:'TERJADWAL', NOTE:note, CREATED_AT:nowStr()
+      SCHEDULE_DATE:date, SCHEDULE_END_DATE:endDate||'', COST:cost,
+      STATUS:'TERJADWAL', NOTE:note, CREATED_AT:nowStr()
     };
     DB.MAINTENANCE.push(data);
     applyMaintenanceUnitLock(data);
-    await audit('CREATE','MAINTENANCE',data.ID,'Jadwal maintenance '+data.NUMBER+(targetType==='ROOM'?' (ruangan dikunci otomatis)':(data.ASSET_UNIT_ID?' (unit dikunci otomatis)':'')));
+    await audit('CREATE','MAINTENANCE',data.ID,'Jadwal maintenance '+data.NUMBER+' (estimasi biaya Rp'+cost+')'+(targetType==='ROOM'?' (ruangan dikunci otomatis)':(data.ASSET_UNIT_ID?' (unit dikunci otomatis)':'')));
     await saveDB();
     closeModal();
     showToast('Maintenance berhasil dijadwalkan.','success');
