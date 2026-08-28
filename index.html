@@ -1764,10 +1764,11 @@ async function audit(action,module,recordId,description){
    INIT
 ========================================================= */
 async function init(){
-  showLoading('Menghubungkan ke server...');
+  showLoading('Harap tunggu...');
   await setupFirebase();
   showLoading('Memuat aplikasi...');
   await loadDB();
+  await expireOverdueInvoices();
   if(FIREBASE_READY) startFirebaseSync();
   const sessionUser = await storageGet(SESSION_KEY);
   hideLoading();
@@ -2094,7 +2095,7 @@ function statusBadge(value){
   let cls = 'badge-gray';
   if(['AKTIF','ACTIVE','TRUE','APPROVED','DISETUJUI','SELESAI','TERSEDIA','BAIK','LUNAS','GRATIS'].includes(upper)) cls='badge-green';
   else if(['MENUNGGU','PENDING','DIPROSES','MAINTENANCE','DITINJAU','DITUGASKAN','TERJADWAL','DIAMBIL','DIPINJAM','MENUNGGU_PEMBAYARAN','MENUNGGU_VERIFIKASI'].includes(upper)) cls='badge-yellow';
-  else if(['NONAKTIF','INACTIVE','FALSE','DITOLAK','REJECTED','RUSAK','RUSAK_BERAT','HILANG','DIBATALKAN','DITUTUP'].includes(upper)) cls='badge-red';
+  else if(['NONAKTIF','INACTIVE','FALSE','DITOLAK','REJECTED','RUSAK','RUSAK_BERAT','HILANG','DIBATALKAN','DITUTUP','KADALUARSA'].includes(upper)) cls='badge-red';
   else if(upper==='BELUM_INVOICE') cls='badge-gray';
   else cls='badge-blue';
   const label = {
@@ -2103,7 +2104,8 @@ function statusBadge(value){
     MENUNGGU_PEMBAYARAN:'Menunggu Pembayaran',
     MENUNGGU_VERIFIKASI:'Menunggu Verifikasi TF',
     LUNAS:'Lunas',
-    GRATIS:'Gratis (Internal)'
+    GRATIS:'Gratis (Internal)',
+    KADALUARSA:'Kadaluarsa (Lewat Bayar)'
   }[upper] || text;
   return '<span class="badge '+cls+'">'+escapeHtml(label)+'</span>';
 }
@@ -3152,8 +3154,15 @@ function renderBookings(type){
   renderBookingStatusTabs();
   renderBookingTable();
 
-  if(type==='ASSET'&&hasPermission(STATE.currentUser,'booking.checkout')){
-    const input=document.getElementById('co_BARCODE');
+  expireOverdueInvoices().then(function(changed){
+    if(changed){
+      renderBookingStatusTabs();
+      renderBookingTable();
+      showToast('Beberapa booking tamu otomatis dibatalkan karena lewat batas waktu bayar.','warning');
+    }
+  });
+
+  if(type==='ASSET'&&hasPermission(STATE.currentUser,'booking.checkout')){    const input=document.getElementById('co_BARCODE');
     if(input){
       input.addEventListener('keydown',function(e){
         if(e.key==='Enter'){
@@ -3869,6 +3878,29 @@ async function deleteBooking(id){
     showToast('Data booking berhasil dihapus.','success');
     renderBookingTable();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+async function expireOverdueInvoices(){
+  const today=todayStr();
+  let changed=false;
+
+  (DB.BOOKINGS||[]).forEach(function(b){
+    if(String(b.IS_GUEST).toUpperCase()==='TRUE'
+      && b.STATUS==='MENUNGGU'
+      && b.PAYMENT_STATUS==='MENUNGGU_PEMBAYARAN'
+      && b.INVOICE_DUE_AT
+      && b.INVOICE_DUE_AT<today){
+      b.STATUS='KADALUARSA';
+      b.NOTE=(b.NOTE?b.NOTE+' | ':'')+'Dibatalkan otomatis: invoice lewat batas waktu pembayaran ('+b.INVOICE_DUE_AT+').';
+      changed=true;
+    }
+  });
+
+  if(changed){
+    await audit('AUTO_EXPIRE','BOOKINGS','-','Sistem membatalkan otomatis booking tamu yang invoice-nya lewat batas waktu pembayaran');
+    await saveDB();
+  }
+
+  return changed;
 }
 /* =========================================================
    INVOICE & VERIFIKASI PEMBAYARAN (khusus booking tamu)
@@ -4700,10 +4732,11 @@ function renderGuestStatusLookupForm(){
     <div id="guestStatusResult" style="margin-top:16px"></div>
   `;
 }
-function lookupGuestBooking(){
+async function lookupGuestBooking(){
   const code=(document.getElementById('gs_CODE').value||'').trim();
   const resultEl=document.getElementById('guestStatusResult');
   if(!code){ showToast('Masukkan atau scan kode booking.','warning'); return; }
+  await expireOverdueInvoices();
   const booking=DB.BOOKINGS.find(b=>b.ID===code && String(b.IS_GUEST).toUpperCase()==='TRUE');
   if(!booking){
     resultEl.innerHTML='<div class="error">Kode booking tidak ditemukan atau bukan booking tamu.</div>';
@@ -4718,6 +4751,8 @@ function renderGuestStatusDetail(booking){
   let actionHtml='';
   if(booking.STATUS==='DITOLAK'){
     actionHtml=`<div class="error">Pengajuan ini ditolak oleh pengelola.${booking.NOTE?' Catatan: '+escapeHtml(booking.NOTE):''}</div>`;
+  }else if(booking.STATUS==='KADALUARSA'){
+    actionHtml=`<div class="error">Pengajuan ini otomatis dibatalkan karena batas waktu pembayaran (${escapeHtml(booking.INVOICE_DUE_AT||'-')}) sudah lewat tanpa konfirmasi pembayaran. Silakan ajukan booking baru kalau masih membutuhkan.</div>`;
   }else if(booking.STATUS==='DIBATALKAN'){
     actionHtml=`<div class="error">Booking ini sudah dibatalkan.</div>`;
   }else if(pay==='BELUM_INVOICE'){
@@ -5273,15 +5308,19 @@ function maintenanceForm(){
         </select>
       </div>
       <div class="form-full" id="m_unit_wrap">
-        <label>Aset</label>
-        <select id="m_ASSET_SELECT" onchange="onMaintenanceAssetChange()">${selectOptions(DB.ASSETS,'ID','NAME',null,true)}</select>
+        <label>Kategori Aset</label>
+        <select id="m_CATEGORY_SELECT" onchange="onMaintenanceCategoryChange()">${selectOptions(DB.ASSET_CATEGORIES,'ID','NAME',null,true)}</select>
+        <label style="margin-top:8px">Aset</label>
+        <select id="m_ASSET_SELECT" onchange="onMaintenanceAssetChange()"><option value="">— Pilih Kategori dulu —</option></select>
         <label style="margin-top:8px">Unit Inventaris *</label>
         <select id="m_ASSET_UNIT_ID"><option value="">— Pilih Aset dulu —</option></select>
         <div class="hint">Atau tulis manual di kolom catatan kalau bukan unit yang terdaftar.</div>
       </div>
       <div class="form-full" id="m_room_wrap" style="display:none">
-        <label>Ruangan *</label>
-        <select id="m_ROOM_ID" onchange="onMaintenanceRoomChange()">${selectOptions(DB.ROOMS,'ID','NAME',null,true)}</select>
+        <label>Gedung</label>
+        <select id="m_BUILDING_SELECT" onchange="onMaintenanceBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select>
+        <label style="margin-top:8px">Ruangan *</label>
+        <select id="m_ROOM_ID" onchange="onMaintenanceRoomChange()"><option value="">— Pilih Gedung dulu —</option></select>
         <div class="hint">Ruangan ini otomatis berstatus "Maintenance" (tidak bisa dibooking) selama pekerjaan berlangsung.</div>
         <div id="m_room_conflict_hint" class="hint" style="color:var(--warning)"></div>
       </div>
@@ -5294,21 +5333,46 @@ function maintenanceForm(){
   ]);
   setTimeout(onMaintenanceTargetTypeChange,50);
 }
-function onMaintenanceAssetChange(){
-  const assetId=getValue('m_ASSET_SELECT');
-  const select=document.getElementById('m_ASSET_UNIT_ID');
-  if(!select)return;
-  const units=DB.ASSET_UNITS.filter(u=>!assetId||u.ASSET_ID===assetId);
-  select.innerHTML = assetId ? selectOptions(units,'ID','INVENTORY_NUMBER',null,true) : '<option value="">— Pilih Aset dulu —</option>';
-}
+
 function onMaintenanceTargetTypeChange(){
   const type=getValue('m_TARGET_TYPE');
   const unitWrap=document.getElementById('m_unit_wrap');
   const roomWrap=document.getElementById('m_room_wrap');
   if(unitWrap) unitWrap.style.display = type==='ROOM' ? 'none' : '';
   if(roomWrap) roomWrap.style.display = type==='ROOM' ? '' : 'none';
-  if(type==='ROOM') onMaintenanceRoomChange();
+  if(type==='ROOM') onMaintenanceBuildingChange();
+  else onMaintenanceCategoryChange();
 }
+
+function onMaintenanceCategoryChange(){
+  const categoryId=getValue('m_CATEGORY_SELECT');
+  const assetSelect=document.getElementById('m_ASSET_SELECT');
+  if(!assetSelect)return;
+  const assets=DB.ASSETS.filter(a=>!categoryId||a.CATEGORY_ID===categoryId);
+  assetSelect.innerHTML = categoryId ? selectOptions(assets,'ID','NAME',null,true) : '<option value="">— Pilih Kategori dulu —</option>';
+  onMaintenanceAssetChange();
+}
+
+function onMaintenanceAssetChange(){
+  const assetId=getValue('m_ASSET_SELECT');
+  const unitSelect=document.getElementById('m_ASSET_UNIT_ID');
+  if(!unitSelect)return;
+  const units=DB.ASSET_UNITS.filter(u=>!assetId||u.ASSET_ID===assetId);
+  const options=units.map(function(u){
+    return Object.assign({},u,{DISPLAY_LABEL: nameOf('ASSETS',u.ASSET_ID)+' — '+u.INVENTORY_NUMBER});
+  });
+  unitSelect.innerHTML = assetId ? selectOptions(options,'ID','DISPLAY_LABEL',null,true) : '<option value="">— Pilih Aset dulu —</option>';
+}
+
+function onMaintenanceBuildingChange(){
+  const buildingId=getValue('m_BUILDING_SELECT');
+  const roomSelect=document.getElementById('m_ROOM_ID');
+  if(!roomSelect)return;
+  const rooms=DB.ROOMS.filter(r=>!buildingId||r.BUILDING_ID===buildingId);
+  roomSelect.innerHTML = buildingId ? selectOptions(rooms,'ID','NAME',null,true) : '<option value="">— Pilih Gedung dulu —</option>';
+  onMaintenanceRoomChange();
+}
+
 function onMaintenanceRoomChange(){
   const roomId=getValue('m_ROOM_ID');
   const hint=document.getElementById('m_room_conflict_hint');
