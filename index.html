@@ -1153,6 +1153,85 @@ function getDefaultReportSettings(){
    laporan custom
 ========================================================= */
 
+const REPORT_SOURCES = [
+  ['BOOKING','Booking (Ruangan & Barang)'],
+  ['LAPORAN','Laporan Kerusakan'],
+  ['MAINTENANCE','Maintenance'],
+  ['STOCK','Ambil Barang Habis Pakai']
+];
+
+const REPORT_STATUS_OPTIONS = {
+  BOOKING: [['','Semua Status'],['MENUNGGU','Menunggu'],['DISETUJUI','Disetujui'],['DIAMBIL','Diambil'],['SELESAI','Selesai'],['DITOLAK','Ditolak'],['DIBATALKAN','Dibatalkan'],['KADALUARSA','Kadaluarsa']],
+  LAPORAN: [['','Semua Status'],['BARU','Baru'],['DITUGASKAN','Ditugaskan'],['DIPROSES','Diproses'],['SELESAI','Selesai'],['DITUTUP','Ditutup'],['DITOLAK','Ditolak']],
+  MAINTENANCE: [['','Semua Status'],['TERJADWAL','Terjadwal'],['DIPROSES','Diproses'],['SELESAI','Selesai'],['DITUNDA','Ditunda']],
+  STOCK: [['','Semua Status'],['MENUNGGU','Menunggu'],['DISETUJUI','Disetujui'],['DITOLAK','Ditolak'],['DIAMBIL','Diambil']]
+};
+
+const REPORT_SOURCE_ADAPTERS = {
+  BOOKING:{
+    dateField:b=>b.DATE||(b.CREATED_AT||'').substring(0,10),
+    valueField:b=>Number(b.TOTAL_FEE)||0,
+    valueLabel:'Total Biaya',
+    columns:[['ID','Kode Booking'],['TYPE','Jenis'],['ITEM_NAME','Item'],['USER_NAME','Pengguna'],['IS_GUEST','Kategori'],['STATUS','Status'],['PAYMENT_STATUS','Pembayaran'],['DISCOUNT_AMOUNT','Diskon'],['TOTAL_FEE','Total Biaya'],['DATE','Tanggal']],
+    getRows:function(start,end,status,user,type){
+      return (DB.BOOKINGS||[]).filter(function(b){
+        const d=b.DATE||(b.CREATED_AT||'').substring(0,10);
+        if(!d||d<start||d>end)return false;
+        if(status&&b.STATUS!==status)return false;
+        if(type&&b.TYPE!==type)return false;
+        if(user){
+          const guest=String(b.IS_GUEST||'').toUpperCase()==='TRUE';
+          if(user==='__GUEST__'){ if(!guest)return false; }
+          else{ if(guest)return false; if(String(b.USER_ID||'')!==String(user))return false; }
+        }
+        return true;
+      });
+    }
+  },
+  LAPORAN:{
+    dateField:r=>(r.REPORTED_AT||r.CREATED_AT||'').substring(0,10),
+    valueField:function(){return 0;},
+    valueLabel:null,
+    columns:[['REPORT_NUMBER','Nomor'],['CATEGORY_NAME','Kategori'],['USER_NAME','Pelapor'],['LOCATION','Lokasi'],['STATUS','Status'],['REPORTED_AT','Tanggal']],
+    getRows:function(start,end,status){
+      return (DB.REPORTS||[]).filter(function(r){
+        const d=(r.REPORTED_AT||r.CREATED_AT||'').substring(0,10);
+        if(!d||d<start||d>end)return false;
+        if(status&&r.STATUS!==status)return false;
+        return true;
+      });
+    }
+  },
+  MAINTENANCE:{
+    dateField:m=>m.SCHEDULE_DATE||(m.CREATED_AT||'').substring(0,10),
+    valueField:m=>Number(m.COST)||0,
+    valueLabel:'Total Biaya',
+    columns:[['NUMBER','Nomor'],['TYPE_NAME','Jenis'],['ASSET_NAME','Aset/Lokasi'],['ASSIGNED_NAME','Pelaksana'],['STATUS','Status'],['SCHEDULE_DATE','Tgl Mulai'],['SCHEDULE_END_DATE','Estimasi Selesai'],['COST','Biaya']],
+    getRows:function(start,end,status){
+      return (DB.MAINTENANCE||[]).filter(function(m){
+        const d=m.SCHEDULE_DATE||(m.CREATED_AT||'').substring(0,10);
+        if(!d||d<start||d>end)return false;
+        if(status&&m.STATUS!==status)return false;
+        return true;
+      });
+    }
+  },
+  STOCK:{
+    dateField:s=>(s.CREATED_AT||'').substring(0,10),
+    valueField:function(){return 0;},
+    valueLabel:null,
+    columns:[['ID','Kode'],['ASSET_NAME','Barang'],['QTY','Jumlah'],['USER_NAME','Pemohon'],['STATUS','Status'],['CREATED_AT','Diajukan']],
+    getRows:function(start,end,status){
+      return (DB.STOCK_TAKEOUTS||[]).filter(function(s){
+        const d=(s.CREATED_AT||'').substring(0,10);
+        if(!d||d<start||d>end)return false;
+        if(status&&s.STATUS!==status)return false;
+        return true;
+      });
+    }
+  }
+};
+
 function renderCustomReport(){
   try{
     requirePerm('report.view');
@@ -1162,10 +1241,14 @@ function renderCustomReport(){
 
     content.innerHTML=`
       <div class="page-title">📊 Custom Laporan</div>
-      <div class="page-subtitle">Laporan dapat difilter berdasarkan periode, status, pengguna, dan jenis transaksi.</div>
+      <div class="page-subtitle">Pilih sumber data, lalu atur filter sesuai kebutuhan. Ringkasan, grafik, dan rekap otomatis menyesuaikan.</div>
       <div class="card">
         <div class="card-title">Filter Laporan</div>
         <div class="form-grid">
+          <div>
+            <label>Sumber Data *</label>
+            <select id="cr_SOURCE" onchange="onReportSourceChange()">${REPORT_SOURCES.map(s=>'<option value="'+s[0]+'">'+s[1]+'</option>').join('')}</select>
+          </div>
           <div>
             <label>Tanggal Mulai *</label>
             <input id="cr_START_DATE" type="date" value="${todayStr()}" onchange="generateCustomReport()">
@@ -1176,31 +1259,25 @@ function renderCustomReport(){
           </div>
           <div>
             <label>Status</label>
-            <select id="cr_STATUS" onchange="generateCustomReport()">
-              <option value="">Semua Status</option>
-              <option value="MENUNGGU">Menunggu</option>
-              <option value="DISETUJUI">Disetujui</option>
-              <option value="DIAMBIL">Diambil</option>
-              <option value="SELESAI">Selesai</option>
-              <option value="DITOLAK">Ditolak</option>
-              <option value="DIBATALKAN">Dibatalkan</option>
-            </select>
+            <select id="cr_STATUS" onchange="generateCustomReport()"></select>
           </div>
-          <div>
+          <div id="cr_user_wrap">
             <label>Pengguna / Peminjam</label>
             <select id="cr_USER" onchange="generateCustomReport()">
               <option value="">Semua Pengguna</option>
               <option value="__GUEST__">Tamu / Guest</option>
               ${users.map(u=>`<option value="${escapeHtml(u.ID)}">${escapeHtml(u.NAME)}</option>`).join('')}
             </select>
+            <div class="hint">Filter ini cuma berlaku untuk sumber data Booking.</div>
           </div>
-          <div>
+          <div id="cr_type_wrap">
             <label>Jenis</label>
             <select id="cr_TYPE" onchange="generateCustomReport()">
               <option value="">Semua Jenis</option>
               <option value="ROOM">Ruangan</option>
               <option value="ASSET">Barang</option>
             </select>
+            <div class="hint">Filter ini cuma berlaku untuk sumber data Booking.</div>
           </div>
           <div>
             <label>Kelompok Grafik</label>
@@ -1234,15 +1311,120 @@ function renderCustomReport(){
         <div id="cr_yearly"></div>
       </div>
       <div class="card">
-        <div class="card-title">📋 Detail Transaksi</div>
+        <div class="card-title">📋 Detail Data</div>
         <div id="cr_detail"></div>
       </div>
     `;
 
-    generateCustomReport();
+    onReportSourceChange();
   }catch(error){
     showToast(getErrorMessage(error),'error');
   }
+}
+
+function onReportSourceChange(){
+  const source=getValue('cr_SOURCE')||'BOOKING';
+  const statusSelect=document.getElementById('cr_STATUS');
+  const userWrap=document.getElementById('cr_user_wrap');
+  const typeWrap=document.getElementById('cr_type_wrap');
+  if(statusSelect){
+    const options=REPORT_STATUS_OPTIONS[source]||[['','Semua Status']];
+    statusSelect.innerHTML=options.map(o=>'<option value="'+o[0]+'">'+o[1]+'</option>').join('');
+  }
+  if(userWrap) userWrap.style.display = source==='BOOKING' ? '' : 'none';
+  if(typeWrap) typeWrap.style.display = source==='BOOKING' ? '' : 'none';
+  generateCustomReport();
+}
+
+function getCustomReportFilters(){
+  return{
+    source:getValue('cr_SOURCE')||'BOOKING',
+    startDate:getValue('cr_START_DATE'),
+    endDate:getValue('cr_END_DATE'),
+    status:getValue('cr_STATUS'),
+    user:getValue('cr_USER'),
+    type:getValue('cr_TYPE'),
+    group:getValue('cr_GROUP')||'DAILY'
+  };
+}
+
+function getCustomReportData(){
+  const f=getCustomReportFilters();
+  const adapter=REPORT_SOURCE_ADAPTERS[f.source]||REPORT_SOURCE_ADAPTERS.BOOKING;
+  if(!f.startDate||!f.endDate)return{filters:f,adapter,rows:[],daily:[],monthly:[],yearly:[],total:0,totalValue:0};
+
+  const rows=adapter.getRows(f.startDate,f.endDate,f.status,f.user,f.type)
+    .slice()
+    .sort(function(a,b){ return adapter.dateField(a).localeCompare(adapter.dateField(b)); });
+
+  const buildGroup=function(keyFn){
+    const map={};
+    rows.forEach(function(row){
+      const key=keyFn(row);
+      if(!key)return;
+      if(!map[key])map[key]={PERIODE:key,TOTAL:0,VALUE:0};
+      map[key].TOTAL++;
+      map[key].VALUE+=adapter.valueField(row);
+    });
+    return Object.values(map).sort(function(a,b){ return a.PERIODE.localeCompare(b.PERIODE); });
+  };
+
+  const daily=buildGroup(function(row){ return adapter.dateField(row); });
+  const monthly=buildGroup(function(row){ return adapter.dateField(row).substring(0,7); });
+  const yearly=buildGroup(function(row){ return adapter.dateField(row).substring(0,4); });
+
+  return{
+    filters:f,
+    adapter,
+    rows,
+    daily,
+    monthly,
+    yearly,
+    total:rows.length,
+    totalValue:rows.reduce(function(s,row){ return s+adapter.valueField(row); },0)
+  };
+}
+
+function generateCustomReport(){
+  try{
+    requirePerm('report.view');
+    const data=getCustomReportData();
+
+    if(data.filters.startDate&&data.filters.endDate&&data.filters.endDate<data.filters.startDate){
+      showToast('Tanggal selesai tidak boleh lebih kecil dari tanggal mulai.','warning');
+      return;
+    }
+
+    renderCustomReportSummary(data);
+    renderCustomReportChart(data);
+    renderCustomReportRecap(data);
+    renderCustomReportDetailTable(data);
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
+}
+
+function renderCustomReportSummary(data){
+  const el=document.getElementById('cr_summary');
+  if(!el)return;
+
+  const statusCounts={};
+  data.rows.forEach(function(row){ statusCounts[row.STATUS]=(statusCounts[row.STATUS]||0)+1; });
+
+  const statusCardsHtml=Object.keys(statusCounts).map(function(s){
+    return `<div class="stat-card"><div class="stat-label">${escapeHtml(s)}</div><div class="stat-value">${statusCounts[s]}</div></div>`;
+  }).join('');
+
+  el.innerHTML=`
+    <div class="card">
+      <div class="card-title">Ringkasan</div>
+      <div class="stats">
+        <div class="stat-card"><div class="stat-label">Total Data</div><div class="stat-value">${data.total}</div></div>
+        ${data.adapter.valueLabel ? `<div class="stat-card"><div class="stat-label">${escapeHtml(data.adapter.valueLabel)}</div><div class="stat-value">${escapeHtml(formatCurrency(data.totalValue))}</div></div>` : ''}
+        ${statusCardsHtml}
+      </div>
+    </div>
+  `;
 }
 
 function renderCustomReportChart(data){
@@ -1257,360 +1439,63 @@ function renderCustomReportChart(data){
     return;
   }
 
-  const maxValue=Math.max(...rows.map(r=>Math.max(Number(r.GUEST)||0,Number(r.INTERNAL)||0,Number(r.ROOM)||0,Number(r.ASSET)||0)),1);
-  const maxFee=Math.max(...rows.map(r=>Number(r.BIAYA)||0),1);
+  const maxTotal=Math.max.apply(null,rows.map(function(r){return r.TOTAL||0;}).concat([1]));
+  const maxValue=Math.max.apply(null,rows.map(function(r){return r.VALUE||0;}).concat([1]));
+  const showValue=!!data.adapter.valueLabel;
 
   const bars=rows.map(function(r){
-    const guest=Number(r.GUEST)||0;
-    const internal=Number(r.INTERNAL)||0;
-    const room=Number(r.ROOM)||0;
-    const asset=Number(r.ASSET)||0;
-    const fee=Number(r.BIAYA)||0;
-
-    const guestWidth=Math.max((guest/maxValue)*100,guest?2:0);
-    const internalWidth=Math.max((internal/maxValue)*100,internal?2:0);
-    const roomWidth=Math.max((room/maxValue)*100,room?2:0);
-    const assetWidth=Math.max((asset/maxValue)*100,asset?2:0);
-    const feeWidth=Math.max((fee/maxFee)*100,fee?2:0);
-
-    return`
-      <div style="margin-bottom:18px">
+    const totalWidth=Math.max((r.TOTAL/maxTotal)*100, r.TOTAL?2:0);
+    const valueWidth=showValue?Math.max((r.VALUE/maxValue)*100, r.VALUE?2:0):0;
+    return `
+      <div style="margin-bottom:16px">
         <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:7px;font-size:12px">
           <b>${escapeHtml(r.PERIODE)}</b>
-          <span>${r.TRANSAKSI} transaksi · ${escapeHtml(formatCurrency(fee))}</span>
+          <span>${r.TOTAL} data${showValue?' · '+escapeHtml(formatCurrency(r.VALUE)):''}</span>
         </div>
         <div style="display:grid;gap:5px">
           <div style="display:grid;grid-template-columns:90px 1fr 45px;align-items:center;gap:8px">
-            <span style="font-size:11px">👤 Tamu</span>
-            <div style="height:14px;background:#EEF0F5;border-radius:7px;overflow:hidden">
-              <div style="height:100%;width:${guestWidth}%;background:#4F46E5;border-radius:7px"></div>
-            </div>
-            <b style="font-size:11px;text-align:right">${guest}</b>
+            <span style="font-size:11px">📋 Jumlah</span>
+            <div style="height:14px;background:#EEF0F5;border-radius:7px;overflow:hidden"><div style="height:100%;width:${totalWidth}%;background:#4F46E5;border-radius:7px"></div></div>
+            <b style="font-size:11px;text-align:right">${r.TOTAL}</b>
           </div>
-          <div style="display:grid;grid-template-columns:90px 1fr 45px;align-items:center;gap:8px">
-            <span style="font-size:11px">👥 Internal</span>
-            <div style="height:14px;background:#EEF0F5;border-radius:7px;overflow:hidden">
-              <div style="height:100%;width:${internalWidth}%;background:#16A34A;border-radius:7px"></div>
-            </div>
-            <b style="font-size:11px;text-align:right">${internal}</b>
-          </div>
-          <div style="display:grid;grid-template-columns:90px 1fr 45px;align-items:center;gap:8px">
-            <span style="font-size:11px">🏢 Ruangan</span>
-            <div style="height:14px;background:#EEF0F5;border-radius:7px;overflow:hidden">
-              <div style="height:100%;width:${roomWidth}%;background:#F59E0B;border-radius:7px"></div>
-            </div>
-            <b style="font-size:11px;text-align:right">${room}</b>
-          </div>
-          <div style="display:grid;grid-template-columns:90px 1fr 45px;align-items:center;gap:8px">
-            <span style="font-size:11px">📦 Barang</span>
-            <div style="height:14px;background:#EEF0F5;border-radius:7px;overflow:hidden">
-              <div style="height:100%;width:${assetWidth}%;background:#DC2626;border-radius:7px"></div>
-            </div>
-            <b style="font-size:11px;text-align:right">${asset}</b>
-          </div>
-          <div style="display:grid;grid-template-columns:90px 1fr 45px;align-items:center;gap:8px">
-            <span style="font-size:11px">💰 Biaya</span>
-            <div style="height:14px;background:#EEF0F5;border-radius:7px;overflow:hidden">
-              <div style="height:100%;width:${feeWidth}%;background:#7C3AED;border-radius:7px"></div>
-            </div>
-            <b style="font-size:11px;text-align:right">${escapeHtml(formatCurrency(fee))}</b>
-          </div>
+          ${showValue?`<div style="display:grid;grid-template-columns:90px 1fr 45px;align-items:center;gap:8px">
+            <span style="font-size:11px">💰 Nilai</span>
+            <div style="height:14px;background:#EEF0F5;border-radius:7px;overflow:hidden"><div style="height:100%;width:${valueWidth}%;background:#7C3AED;border-radius:7px"></div></div>
+            <b style="font-size:11px;text-align:right">${escapeHtml(formatCurrency(r.VALUE))}</b>
+          </div>`:''}
         </div>
       </div>
     `;
   }).join('');
 
-  el.innerHTML=`
-    <div style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:18px;font-size:11px">
-      <span>🔵 Tamu</span>
-      <span>🟢 Internal</span>
-      <span>🟠 Ruangan</span>
-      <span>🔴 Barang</span>
-      <span>🟣 Total Biaya</span>
-    </div>
-    <div>${bars}</div>
-  `;
+  el.innerHTML=`<div>${bars}</div>`;
 }
 
-function generateCustomReport(){
-  try{
-    requirePerm('report.view');
+function renderCustomReportRecap(data){
+  const cols = data.adapter.valueLabel
+    ? [['PERIODE','Periode'],['TOTAL','Jumlah'],['VALUE',data.adapter.valueLabel]]
+    : [['PERIODE','Periode'],['TOTAL','Jumlah']];
 
-    const data=getCustomReportData();
+  const dailyEl=document.getElementById('cr_daily');
+  const monthlyEl=document.getElementById('cr_monthly');
+  const yearlyEl=document.getElementById('cr_yearly');
 
-    if(data.filters.startDate&&data.filters.endDate&&data.filters.endDate<data.filters.startDate){
-      showToast('Tanggal selesai tidak boleh lebih kecil dari tanggal mulai.','warning');
-      return;
-    }
-
-    const summaryEl=document.getElementById('cr_summary');
-    const dailyEl=document.getElementById('cr_daily');
-    const monthlyEl=document.getElementById('cr_monthly');
-    const yearlyEl=document.getElementById('cr_yearly');
-    const detailEl=document.getElementById('cr_detail');
-
-    if(summaryEl){
-      const guest=data.rows.filter(function(b){
-        return String(b.IS_GUEST||'').toUpperCase()==='TRUE'||String(b.USER_NAME||'').toUpperCase().includes('(TAMU)');
-      }).length;
-      const internal=data.total-guest;
-      const room=data.rows.filter(b=>b.TYPE==='ROOM').length;
-      const asset=data.rows.filter(b=>b.TYPE==='ASSET').length;
-
-      summaryEl.innerHTML=`
-        <div class="card">
-          <div class="card-title">Ringkasan</div>
-          <div class="stats-grid">
-            <div class="stat-card"><div class="stat-label">Total Transaksi</div><div class="stat-value">${data.total}</div></div>
-            <div class="stat-card"><div class="stat-label">Tamu</div><div class="stat-value">${guest}</div></div>
-            <div class="stat-card"><div class="stat-label">Internal</div><div class="stat-value">${internal}</div></div>
-            <div class="stat-card"><div class="stat-label">Ruangan</div><div class="stat-value">${room}</div></div>
-            <div class="stat-card"><div class="stat-label">Barang</div><div class="stat-value">${asset}</div></div>
-            <div class="stat-card"><div class="stat-label">Total Biaya</div><div class="stat-value">${escapeHtml(formatCurrency(data.totalFee))}</div></div>
-          </div>
-        </div>
-      `;
-    }
-
-    renderCustomReportChart(data);
-
-    if(dailyEl){
-      dailyEl.innerHTML=renderTableHtml(
-        data.daily,
-        [['PERIODE','Tanggal'],['TRANSAKSI','Transaksi'],['ROOM','Ruangan'],['ASSET','Barang'],['GUEST','Tamu'],['INTERNAL','Internal'],['BIAYA','Total Biaya']],
-        function(){return'';}
-      );
-    }
-
-    if(monthlyEl){
-      monthlyEl.innerHTML=renderTableHtml(
-        data.monthly,
-        [['PERIODE','Bulan'],['TRANSAKSI','Transaksi'],['ROOM','Ruangan'],['ASSET','Barang'],['GUEST','Tamu'],['INTERNAL','Internal'],['BIAYA','Total Biaya']],
-        function(){return'';}
-      );
-    }
-
-    if(yearlyEl){
-      yearlyEl.innerHTML=renderTableHtml(
-        data.yearly,
-        [['PERIODE','Tahun'],['TRANSAKSI','Transaksi'],['ROOM','Ruangan'],['ASSET','Barang'],['GUEST','Tamu'],['INTERNAL','Internal'],['BIAYA','Total Biaya']],
-        function(){return'';}
-      );
-    }
-
-    if(detailEl){
-      const detailRows=data.rows.map(function(b){
-        const guest=String(b.IS_GUEST||'').toUpperCase()==='TRUE'||String(b.USER_NAME||'').toUpperCase().includes('(TAMU)');
-        return{
-          ID:b.ID||'',
-          DATE:getCustomReportDate(b),
-          TYPE:getCustomReportTypeName(b.TYPE),
-          ITEM_NAME:b.ITEM_NAME||'',
-          USER_NAME:b.USER_NAME||'',
-          USER_TYPE:guest?'Tamu':'Internal',
-          STATUS:getCustomReportStatusName(b.STATUS),
-          DURATION_DAYS:Number(b.DURATION_DAYS)||0,
-          DURATION_HOURS:Number(b.DURATION_HOURS)||0,
-          TOTAL_FEE:Number(b.TOTAL_FEE)||0
-        };
-      });
-
-      detailEl.innerHTML=renderTableHtml(
-        detailRows,
-        [['DATE','Tanggal'],['ID','Booking'],['TYPE','Jenis'],['ITEM_NAME','Item'],['USER_NAME','Pengguna'],['USER_TYPE','Kategori'],['STATUS','Status'],['DURATION_DAYS','Hari'],['DURATION_HOURS','Jam'],['TOTAL_FEE','Total Biaya']],
-        function(){return'';}
-      );
-    }
-  }catch(error){
-    showToast(getErrorMessage(error),'error');
-  }
-}
-function getCustomReportData(){
-  const f=getCustomReportFilters();
-  if(!f.startDate||!f.endDate)return{filters:f,rows:[],daily:[],monthly:[],yearly:[],total:0,totalFee:0};
-
-  const rows=(DB.BOOKINGS||[]).filter(function(b){
-    const date=getCustomReportDate(b);
-    if(!date||date<f.startDate||date>f.endDate)return false;
-    if(f.status&&String(b.STATUS||'')!==f.status)return false;
-    if(f.type&&String(b.TYPE||'')!==f.type);
-
-    if(f.user){
-      const isGuest=String(b.IS_GUEST||'').toUpperCase()==='TRUE'||String(b.USER_NAME||'').toUpperCase().includes('(TAMU)');
-      if(f.user==='__GUEST__'){
-        if(!isGuest)return false;
-      }else{
-        if(isGuest)return false;
-        if(String(b.USER_ID||'')!==String(f.user))return false;
-      }
-    }
-
-    return true;
-  }).sort((a,b)=>getCustomReportDate(a).localeCompare(getCustomReportDate(b)));
-
-  const buildGroup=function(keyFn){
-    const map={};
-    rows.forEach(function(b){
-      const key=keyFn(b);
-      if(!key)return;
-      if(!map[key])map[key]={PERIODE:key,TRANSAKSI:0,ROOM:0,ASSET:0,GUEST:0,INTERNAL:0,BIAYA:0};
-      map[key].TRANSAKSI++;
-      if(b.TYPE==='ROOM')map[key].ROOM++;
-      if(b.TYPE==='ASSET')map[key].ASSET++;
-      const isGuest=String(b.IS_GUEST||'').toUpperCase()==='TRUE'||String(b.USER_NAME||'').toUpperCase().includes('(TAMU)');
-      if(isGuest)map[key].GUEST++;
-      else map[key].INTERNAL++;
-      map[key].BIAYA+=Number(b.TOTAL_FEE)||0;
-    });
-    return Object.values(map).sort((a,b)=>a.PERIODE.localeCompare(b.PERIODE));
-  };
-
-  const daily=buildGroup(b=>getCustomReportDate(b));
-  const monthly=buildGroup(b=>getCustomReportMonth(getCustomReportDate(b)));
-  const yearly=buildGroup(b=>getCustomReportYear(getCustomReportDate(b)));
-
-  return{
-    filters:f,
-    rows:rows,
-    daily:daily,
-    monthly:monthly,
-    yearly:yearly,
-    total:rows.length,
-    totalFee:rows.reduce((s,b)=>s+(Number(b.TOTAL_FEE)||0),0)
-  };
+  if(dailyEl) dailyEl.innerHTML = renderTableHtml(data.daily, cols, function(){return '';});
+  if(monthlyEl) monthlyEl.innerHTML = renderTableHtml(data.monthly, cols, function(){return '';});
+  if(yearlyEl) yearlyEl.innerHTML = renderTableHtml(data.yearly, cols, function(){return '';});
 }
 
-function getCustomReportFilters(){
-  return{
-    startDate:getValue('cr_START_DATE'),
-    endDate:getValue('cr_END_DATE'),
-    status:getValue('cr_STATUS'),
-    user:getValue('cr_USER'),
-    type:getValue('cr_TYPE'),
-    group:getValue('cr_GROUP')||'DAILY'
-  };
-}
-
-function getCustomReportDate(booking){
-  return booking.DATE||booking.CREATED_AT?.substring(0,10)||'';
-}
-
-function getCustomReportMonth(date){
-  return date?date.substring(0,7):'';
-}
-
-function getCustomReportYear(date){
-  return date?date.substring(0,4):'';
-}
-
-function getCustomReportTypeName(type){
-  if(type==='ROOM')return'Ruangan';
-  if(type==='ASSET')return'Barang';
-  return type||'-';
-}
-
-function getCustomReportStatusName(status){
-  const map={
-    MENUNGGU:'Menunggu',
-    DISETUJUI:'Disetujui',
-    DIAMBIL:'Diambil',
-    SELESAI:'Selesai',
-    DITOLAK:'Ditolak',
-    DIBATALKAN:'Dibatalkan'
-  };
-  return map[status]||status||'-';
-}
-
-function renderCustomReportTable(elementId,rows){
-  const el=document.getElementById(elementId);
-  if(!el)return;
-
-  if(!rows.length){
-    el.innerHTML='<div class="empty-state">Tidak ada data.</div>';
-    return;
-  }
-
-  el.innerHTML=`
-    <div class="table-wrapper">
-      <table>
-        <thead>
-          <tr>
-            <th>Periode</th>
-            <th>Transaksi</th>
-            <th>Ruangan</th>
-            <th>Barang</th>
-            <th>Total Biaya</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(r=>`
-            <tr>
-              <td>${escapeHtml(r.PERIODE)}</td>
-              <td>${r.TRANSAKSI}</td>
-              <td>${r.ROOM}</td>
-              <td>${r.ASSET}</td>
-              <td>${escapeHtml(formatCurrency(r.BIAYA))}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
-function renderCustomReportDetail(rows){
+function renderCustomReportDetailTable(data){
   const el=document.getElementById('cr_detail');
   if(!el)return;
-
-  if(!rows.length){
-    el.innerHTML='<div class="empty-state">Tidak ada transaksi pada filter tersebut.</div>';
-    return;
-  }
-
-  el.innerHTML=`
-    <div class="table-wrapper">
-      <table>
-        <thead>
-          <tr>
-            <th>Tanggal</th>
-            <th>ID</th>
-            <th>Jenis</th>
-            <th>Item</th>
-            <th>Pemohon</th>
-            <th>Status</th>
-            <th>Mulai</th>
-            <th>Selesai</th>
-            <th>Hari</th>
-            <th>Jam</th>
-            <th>Total Biaya</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(b=>`
-            <tr>
-              <td>${escapeHtml(getCustomReportDate(b))}</td>
-              <td>${escapeHtml(b.ID||'-')}</td>
-              <td>${escapeHtml(getCustomReportTypeName(b.TYPE))}</td>
-              <td>${escapeHtml(b.ITEM_NAME||'-')}</td>
-              <td>${escapeHtml(b.USER_NAME||'-')}</td>
-              <td>${escapeHtml(getCustomReportStatusName(b.STATUS))}</td>
-              <td>${escapeHtml(b.START_TIME||'-')}</td>
-              <td>${escapeHtml(b.END_TIME||'-')}</td>
-              <td>${Number(b.DURATION_DAYS)||0}</td>
-              <td>${Number(b.DURATION_HOURS)||0}</td>
-              <td>${escapeHtml(formatCurrency(Number(b.TOTAL_FEE)||0))}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
+  el.innerHTML = renderTableHtml(data.rows, data.adapter.columns, function(){return '';});
 }
 
 function exportCustomReportExcel(){
   try{
     requirePerm('report.view');
     const data=getCustomReportData();
+
     if(!data.filters.startDate||!data.filters.endDate){
       showToast('Tanggal mulai dan tanggal selesai wajib diisi.','warning');
       return;
@@ -1623,103 +1508,56 @@ function exportCustomReportExcel(){
       showToast('Tidak ada data untuk diexport.','warning');
       return;
     }
-    const getGuestStatus=function(b){
-      return String(b.IS_GUEST||'').toUpperCase()==='TRUE'||String(b.USER_NAME||'').toUpperCase().includes('(TAMU)');
+
+    const sourceLabel=(REPORT_SOURCES.find(function(s){return s[0]===data.filters.source;})||['','Data'])[1];
+
+    const detail=data.rows.map(function(row){
+      const obj={};
+      data.adapter.columns.forEach(function(col){
+        const key=col[0], label=col[1];
+        let value=row[key];
+        if(['TOTAL_FEE','COST','DISCOUNT_AMOUNT'].includes(key)) value=Number(value)||0;
+        if(key==='IS_GUEST') value = String(value).toUpperCase()==='TRUE' ? 'Tamu' : 'Internal/Staf';
+        if(key==='TYPE') value = value==='ROOM'?'Ruangan':value==='ASSET'?'Barang':(value||'-');
+        obj[label]=value===undefined||value===null?'':value;
+      });
+      return obj;
+    });
+
+    const recapRows=function(list,periodLabel){
+      return list.map(function(r){
+        const obj={};
+        obj[periodLabel]=r.PERIODE;
+        obj['Jumlah']=r.TOTAL;
+        if(data.adapter.valueLabel) obj[data.adapter.valueLabel]=r.VALUE;
+        return obj;
+      });
     };
-    const detail=data.rows.map(function(b){
-      return{
-        'Tanggal':getCustomReportDate(b),
-        'ID Booking':b.ID||'',
-        'Jenis':getCustomReportTypeName(b.TYPE),
-        'Item':b.ITEM_NAME||'',
-        'Pengguna':b.USER_NAME||'',
-        'Kategori Pengguna':getGuestStatus(b)?'Tamu':'Internal',
-        'Status':getCustomReportStatusName(b.STATUS),
-        'Tanggal Mulai':b.DATE||'',
-        'Tanggal Selesai':b.END_DATE||b.DATE||'',
-        'Jam Mulai':b.START_TIME||'',
-        'Jam Selesai':b.END_TIME||'',
-        'Akumulasi Hari':Number(b.DURATION_DAYS)||0,
-        'Akumulasi Jam':Number(b.DURATION_HOURS)||0,
-        'Satuan Tarif':b.RATE_UNIT||'',
-        'Tarif':Number(b.RATE)||0,
-        'Biaya Dasar':Number(b.BASE_FEE)||0,
-        'Biaya Fasilitas':Number(b.FACILITY_FEE)||0,
-        'Total Biaya':Number(b.TOTAL_FEE)||0,
-        'Tujuan':b.PURPOSE||'',
-        'Instansi':b.GUEST_INSTANSI||'',
-        'Kontak Tamu':b.GUEST_CONTACT||'',
-        'Dibuat':b.CREATED_AT||''
-      };
-    });
-    const daily=data.daily.map(function(r){
-      return{
-        'Tanggal':r.PERIODE,
-        'Transaksi':r.TRANSAKSI,
-        'Ruangan':r.ROOM,
-        'Barang':r.ASSET,
-        'Tamu':r.GUEST,
-        'Internal':r.INTERNAL,
-        'Total Biaya':r.BIAYA
-      };
-    });
-    const monthly=data.monthly.map(function(r){
-      return{
-        'Bulan':r.PERIODE,
-        'Transaksi':r.TRANSAKSI,
-        'Ruangan':r.ROOM,
-        'Barang':r.ASSET,
-        'Tamu':r.GUEST,
-        'Internal':r.INTERNAL,
-        'Total Biaya':r.BIAYA
-      };
-    });
-    const yearly=data.yearly.map(function(r){
-      return{
-        'Tahun':r.PERIODE,
-        'Transaksi':r.TRANSAKSI,
-        'Ruangan':r.ROOM,
-        'Barang':r.ASSET,
-        'Tamu':r.GUEST,
-        'Internal':r.INTERNAL,
-        'Total Biaya':r.BIAYA
-      };
-    });
-    const totalGuest=data.rows.filter(getGuestStatus).length;
-    const totalInternal=data.rows.length-totalGuest;
-    const totalRoom=data.rows.filter(b=>b.TYPE==='ROOM').length;
-    const totalAsset=data.rows.filter(b=>b.TYPE==='ASSET').length;
-    const summary=[{
+
+    const summary=[Object.assign({
+      'Sumber Data':sourceLabel,
       'Tanggal Mulai':data.filters.startDate,
       'Tanggal Selesai':data.filters.endDate,
-      'Status':data.filters.status?getCustomReportStatusName(data.filters.status):'Semua',
-      'Pengguna':data.filters.user==='__GUEST__'?'Tamu / Guest':data.filters.user||'Semua Pengguna',
-      'Jenis':data.filters.type?getCustomReportTypeName(data.filters.type):'Semua Jenis',
-      'Total Transaksi':data.total,
-      'Total Ruangan':totalRoom,
-      'Total Barang':totalAsset,
-      'Total Tamu':totalGuest,
-      'Total Internal':totalInternal,
-      'Total Biaya':data.totalFee
-    }];
-    const workbookSheets=[
-      {name:'Detail Transaksi',rows:detail},
-      {name:'Rekap Harian',rows:daily},
-      {name:'Rekap Bulanan',rows:monthly},
-      {name:'Rekap Tahunan',rows:yearly}
-    ];
+      'Status':data.filters.status||'Semua',
+      'Total Data':data.total
+    }, data.adapter.valueLabel ? {[data.adapter.valueLabel]:data.totalValue} : {})];
+
     downloadExcelWorkbook(
       summary,
       'Ringkasan',
-      'Laporan_Custom_'+data.filters.startDate+'_'+data.filters.endDate+'.xlsx',
-      workbookSheets
+      'Laporan_'+sourceLabel.replace(/[^a-zA-Z0-9]+/g,'_')+'_'+data.filters.startDate+'_'+data.filters.endDate+'.xlsx',
+      [
+        {name:'Detail Data',rows:detail},
+        {name:'Rekap Harian',rows:recapRows(data.daily,'Tanggal')},
+        {name:'Rekap Bulanan',rows:recapRows(data.monthly,'Bulan')},
+        {name:'Rekap Tahunan',rows:recapRows(data.yearly,'Tahun')}
+      ]
     );
-    showToast('Laporan Excel berhasil dibuat dengan rekap Tamu dan Internal.','success');
+    showToast('Laporan Excel berhasil dibuat.','success');
   }catch(error){
     showToast(getErrorMessage(error),'error');
   }
 }
-
 /* =========================================================
    AUTH
 ========================================================= */
@@ -2060,7 +1898,7 @@ function renderTableHtml(rows,columns,renderActions){
 function formatCell(row,key){
   const value = row[key];
   if(key==='ACTIVE' || key==='STATUS' || key==='PAYMENT_STATUS') return statusBadge(value||'BELUM_INVOICE');
-  if(key==='UNIT_PRICE' || key==='TOTAL_FEE' || key==='RENTAL_FEE' || key==='BASE_FEE' || key==='FACILITY_FEE' || key==='COST') return escapeHtml(formatCurrency(value));
+  if(key==='UNIT_PRICE' || key==='TOTAL_FEE' || key==='RENTAL_FEE' || key==='BASE_FEE' || key==='FACILITY_FEE' || key==='COST' || key==='VALUE' || key==='DISCOUNT_AMOUNT') return escapeHtml(formatCurrency(value));
   if(key==='BUILDING_ID') return escapeHtml(nameOf('BUILDINGS',value) || '-');
   if(key==='ROOM_ID') return escapeHtml(nameOf('ROOMS',value) || '-');
   if(key==='CATEGORY_ID') return escapeHtml(nameOf('ASSET_CATEGORIES',value) || '-');
