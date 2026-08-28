@@ -3406,6 +3406,14 @@ function onInternalRoomChange(){
     ? '📦 <b>Sudah termasuk dalam tarif:</b> '+escapeHtml(room.INCLUDED_FACILITIES)+' <span style="color:#16A34A">(gratis untuk internal)</span>'
     : '🏠 Sewa ruangan murni, tidak ada fasilitas tambahan yang sudah termasuk. <span style="color:#16A34A">(gratis untuk internal)</span>';
 }
+function onInternalBuildingChange(){
+  const buildingId=getValue('b_BUILDING_ID');
+  const roomSelect=document.getElementById('b_ITEM_ID');
+  if(!roomSelect)return;
+  const rooms=DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'&&String(r.CAN_BOOK||'TRUE').toUpperCase()!=='FALSE'&&(!buildingId||r.BUILDING_ID===buildingId));
+  roomSelect.innerHTML = buildingId ? selectOptions(rooms,'ID','NAME',null,true) : '<option value="">— Pilih Gedung dulu —</option>';
+  onInternalRoomChange();
+}
 /* --- Room booking form (unchanged flow) --- */
 function bookingForm(type){
   if(type==='ASSET'){
@@ -3416,15 +3424,23 @@ function bookingForm(type){
   openModal('Booking Ruangan',`
     <div class="hint" style="margin-bottom:10px">🎓 Booking oleh pengguna internal (login) untuk keperluan lembaga <b>tidak dikenakan biaya</b>.</div>
     <div class="form-grid">
-      <div class="form-full">
-        <label>Ruangan *</label>
-        <select id="b_ITEM_ID" onchange="onInternalRoomChange()">${selectOptions(bookableRooms,'ID','NAME',null,true)}</select>      </div>
       <div>
-        <label>Tanggal *</label>
+        <label>Gedung *</label>
+        <select id="b_BUILDING_ID" onchange="onInternalBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select>
+      </div>
+      <div>
+        <label>Ruangan *</label>
+        <select id="b_ITEM_ID" onchange="onInternalRoomChange()"><option value="">— Pilih Gedung dulu —</option></select>
+      </div>
+      <div class="form-full"><div id="b_included_info" class="hint" style="background:#F5F6FB;border-radius:8px;padding:8px 10px"></div></div>
+            <div>
+        <label>Tanggal Mulai *</label>
         <input id="b_DATE" type="date" min="${todayStr()}">
       </div>
-      <div></div>
-      <div class="form-full"><div id="b_included_info" class="hint" style="background:#F5F6FB;border-radius:8px;padding:8px 10px"></div></div>
+      <div>
+        <label>Tanggal Selesai *</label>
+        <input id="b_END_DATE" type="date" min="${todayStr()}">
+      </div>
       <div>
         <label>Jam Mulai *</label>
         <input id="b_START_TIME" type="time">
@@ -3443,7 +3459,7 @@ function bookingForm(type){
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveBooking('ROOM')" ${!bookableRooms.length?'disabled':''}>📤 Ajukan</button>`
   ]);
-setTimeout(onInternalRoomChange,50);
+setTimeout(onInternalBuildingChange,50);
 }
 
 async function saveBooking(type){
@@ -3454,17 +3470,13 @@ async function saveBooking(type){
     }
     const itemId=getValue('b_ITEM_ID');
     const date=getValue('b_DATE');
+    const endDate=getValue('b_END_DATE');
     const start=getValue('b_START_TIME');
     const end=getValue('b_END_TIME');
     const purpose=getValue('b_PURPOSE');
 
-    if(!itemId||!date||!start||!end||!purpose){
+    if(!itemId||!date||!endDate||!start||!end||!purpose){
       showToast('Semua field wajib diisi.','warning');
-      return;
-    }
-
-    if(start>=end){
-      showToast('Jam selesai harus lebih besar dari jam mulai.','warning');
       return;
     }
 
@@ -3488,10 +3500,10 @@ async function saveBooking(type){
     }
 
     const startDateTime=new Date(date+'T'+start);
-    const endDateTime=new Date(date+'T'+end);
+    const endDateTime=new Date(endDate+'T'+end);
 
     if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
-      showToast('Tanggal atau waktu booking tidak valid.','warning');
+      showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
       return;
     }
 
@@ -3510,6 +3522,8 @@ async function saveBooking(type){
       return;
     }
 
+    const duration=calculateBookingDuration(date,endDate,start,end);
+
     const data={
       ID:uid('BKG'),
       TYPE:'ROOM',
@@ -3519,11 +3533,11 @@ async function saveBooking(type){
       USER_NAME:STATE.currentUser.NAME,
       IS_GUEST:'FALSE',
       DATE:date,
-      END_DATE:date,
+      END_DATE:endDate,
       START_TIME:start,
       END_TIME:end,
-      DURATION_DAYS:1,
-      DURATION_HOURS:Math.max(1,Math.ceil((endDateTime-startDateTime)/3600000)),
+      DURATION_DAYS:duration.days,
+      DURATION_HOURS:duration.hours,
       RATE_UNIT:'HARI',
       RATE:0,
       PURPOSE:purpose,
@@ -3585,9 +3599,11 @@ function assetBookingForm(){
       <div class="form-full"><div id="ab_duration_hint" class="hint"></div></div>
     </div>
     <div class="form-group" style="margin-top:10px">
+      <label>Kategori Barang</label>
+      <select id="ab_CATEGORY_SELECT" style="width:100%;margin-bottom:8px" onchange="onAssetBookingCategoryChange()">${selectOptions(DB.ASSET_CATEGORIES,'ID','NAME',null,true)}</select>
       <label>Pilih Barang</label>
       <div style="display:flex;gap:8px">
-        <select id="ab_ASSET_SELECT" style="flex:1">${selectOptions(loanable,'ID','NAME',null,true)}</select>
+        <select id="ab_ASSET_SELECT" style="flex:1"><option value="">— Pilih Kategori dulu —</option></select>
         <input id="ab_ASSET_QTY" type="number" min="1" value="1" style="width:80px">
         <button type="button" class="btn btn-light" onclick="addAssetToCart()">+ Tambah</button>
       </div>
@@ -3601,6 +3617,7 @@ function assetBookingForm(){
   ]);
 
   setTimeout(function(){
+    onAssetBookingCategoryChange();
     const sel=document.getElementById('ab_ASSET_SELECT');
     if(sel)sel.addEventListener('change',updateAssetStockHint);
     updateAssetStockHint();
@@ -3642,6 +3659,14 @@ function updateAssetStockHint(){
   if(!assetId){ hint.textContent=''; return; }
   const stock = assetAvailableStock(assetId);
   hint.textContent = 'Total unit terdaftar: '+stock;
+}
+function onAssetBookingCategoryChange(){
+  const categoryId=getValue('ab_CATEGORY_SELECT');
+  const select=document.getElementById('ab_ASSET_SELECT');
+  if(!select)return;
+  const loanable=DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE'&&(!categoryId||a.CATEGORY_ID===categoryId));
+  select.innerHTML = categoryId ? selectOptions(loanable,'ID','NAME',null,true) : '<option value="">— Pilih Kategori dulu —</option>';
+  updateAssetStockHint();
 }
 function addAssetToCart(){
   const assetId = getValue('ab_ASSET_SELECT');
@@ -4064,9 +4089,13 @@ function renderGuestRoomForm(){
 
   body.innerHTML=`
     <div class="form-grid">
-      <div class="form-full">
+      <div>
+        <label>Gedung *</label>
+        <select id="gr_BUILDING_ID" onchange="onGuestBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select>
+      </div>
+      <div>
         <label>Ruangan *</label>
-        <select id="gr_ITEM_ID" onchange="onGuestRoomChange()">${selectOptions(bookableRooms,'ID','NAME',null,true)}</select>
+        <select id="gr_ITEM_ID" onchange="onGuestRoomChange()"><option value="">— Pilih Gedung dulu —</option></select>
       </div>
       <div>
         <label>Tanggal Mulai *</label>
@@ -4215,6 +4244,14 @@ function onGuestRoomChange(){
     hint.innerHTML='Durasi: <b>'+calculation.hours+' jam</b> · Tarif: <b>'+formatCurrency(rate)+'</b> per jam · Sewa: <b>'+formatCurrency(calculation.total)+'</b>'+(facTotal?' · Fasilitas: <b>'+formatCurrency(facTotal)+'</b>':'')+' · <b>Total: '+formatCurrency(calculation.total+facTotal)+'</b>';
   }
 }
+function onGuestBuildingChange(){
+  const buildingId=getValue('gr_BUILDING_ID');
+  const roomSelect=document.getElementById('gr_ITEM_ID');
+  if(!roomSelect)return;
+  const rooms=DB.ROOMS.filter(r=>r.STATUS==='TERSEDIA'&&String(r.CAN_BOOK||'TRUE').toUpperCase()!=='FALSE'&&(!buildingId||r.BUILDING_ID===buildingId));
+  roomSelect.innerHTML = buildingId ? selectOptions(rooms,'ID','NAME',null,true) : '<option value="">— Pilih Gedung dulu —</option>';
+  onGuestRoomChange();
+}
 function renderGuestAssetForm(){
   const body=document.getElementById('guestFormBody');
   const loanable=DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE');
@@ -4228,9 +4265,11 @@ function renderGuestAssetForm(){
       <div><label>Jam Selesai *</label><input id="ga_END_TIME" type="time" onchange="renderGuestCart()"></div>
     </div>
     <div class="form-group" style="margin-top:10px">
+      <label>Kategori Barang</label>
+      <select id="ga_CATEGORY_SELECT" style="width:100%;margin-bottom:8px" onchange="onGuestAssetCategoryChange()">${selectOptions(DB.ASSET_CATEGORIES,'ID','NAME',null,true)}</select>
       <label>Pilih Barang</label>
       <div style="display:flex;gap:8px">
-        <select id="ga_ASSET_SELECT" style="flex:1">${selectOptions(loanable,'ID','NAME',null,true)}</select>
+        <select id="ga_ASSET_SELECT" style="flex:1"><option value="">— Pilih Kategori dulu —</option></select>
         <input id="ga_ASSET_QTY" type="number" min="1" value="1" style="width:80px">
         <button type="button" class="btn btn-light" onclick="addGuestAssetToCart()">+ Tambah</button>
       </div>
@@ -4247,7 +4286,15 @@ function renderGuestAssetForm(){
     <div class="form-group"><label>Tujuan / Keperluan *</label><textarea id="ga_PURPOSE" placeholder="Contoh: Peminjaman untuk acara seminar"></textarea></div>
   `;
 
+  onGuestAssetCategoryChange();
   renderGuestCart();
+}
+function onGuestAssetCategoryChange(){
+  const categoryId=getValue('ga_CATEGORY_SELECT');
+  const select=document.getElementById('ga_ASSET_SELECT');
+  if(!select)return;
+  const loanable=DB.ASSETS.filter(a=>String(a.CAN_LEND).toUpperCase()==='TRUE'&&(!categoryId||a.CATEGORY_ID===categoryId));
+  select.innerHTML = categoryId ? selectOptions(loanable,'ID','NAME',null,true) : '<option value="">— Pilih Kategori dulu —</option>';
 }
 function addGuestAssetToCart(){
   const assetId = getValue('ga_ASSET_SELECT');
