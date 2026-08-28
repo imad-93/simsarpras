@@ -1086,6 +1086,7 @@ function migrateDB(){
     room.RENTAL_FEE=Number(room.RENTAL_FEE)||0;
     room.RENTAL_UNIT=String(room.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
     if(room.INCLUDED_FACILITIES===undefined)room.INCLUDED_FACILITIES='';
+    if(room.PRE_MAINTENANCE_STATUS===undefined)room.PRE_MAINTENANCE_STATUS='';
   });
   (DB.ASSETS||[]).forEach(function(asset){
     if(asset.RENTAL_FEE===undefined)asset.RENTAL_FEE=0;
@@ -1104,6 +1105,7 @@ function migrateDB(){
       if(unit.RENTAL_FEE===undefined)unit.RENTAL_FEE=0;
       unit.RENTAL_UNIT=String(unit.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
     }
+    if(unit.PRE_MAINTENANCE_STATUS===undefined)unit.PRE_MAINTENANCE_STATUS='';
   });
   
   const allPermCodes=PERMISSIONS.map(p=>p[0]);
@@ -2833,6 +2835,7 @@ function assetUnitForm(row){
         <option value="TERSEDIA" ${row.STATUS==='TERSEDIA'?'selected':''}>Tersedia</option>
         <option value="DIPAKAI" ${row.STATUS==='DIPAKAI'?'selected':''}>Dipakai</option>
         <option value="DIPINJAM" ${row.STATUS==='DIPINJAM'?'selected':''}>Dipinjam</option>
+        <option value="MAINTENANCE" ${row.STATUS==='MAINTENANCE'?'selected':''}>Maintenance</option>
         <option value="RUSAK" ${row.STATUS==='RUSAK'?'selected':''}>Rusak</option>
       </select></div>
       <div><label>Tarif Peminjaman</label><input id="u_RENTAL_FEE" type="number" value="${rentalFee}" readonly></div>
@@ -3651,7 +3654,7 @@ function updateAssetBookingDuration(){
   hint.innerHTML='Akumulasi: <b>'+duration.days+' hari</b> / <b>'+duration.hours+' jam</b> · Digunakan: <b>'+duration.qty+' '+(unit==='HARI'?'hari':'jam')+'</b> · Total biaya internal: <b>Rp0</b>';
 }
 function assetAvailableStock(assetId){
-  return DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId).length;
+  return DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId && !['MAINTENANCE','RUSAK'].includes(String(u.STATUS).toUpperCase())).length;
 }
 function updateAssetStockHint(){
   const assetId = getValue('ab_ASSET_SELECT');
@@ -5215,15 +5218,68 @@ function renderMaintenanceTable(){
       return html || '<span style="color:#9AA3B5;font-size:11px">-</span>';
     });
 }
+function applyMaintenanceUnitLock(maintenance){
+  if(!maintenance) return;
+  const lockStatuses = ['TERJADWAL','DIPROSES'];
+  const shouldLock = lockStatuses.includes(maintenance.STATUS);
+
+  if(maintenance.ASSET_UNIT_ID){
+    const unit = DB.ASSET_UNITS.find(u=>u.ID===maintenance.ASSET_UNIT_ID);
+    if(unit){
+      if(shouldLock){
+        if(unit.STATUS!=='MAINTENANCE'){
+          unit.PRE_MAINTENANCE_STATUS = unit.STATUS || 'TERSEDIA';
+          unit.STATUS = 'MAINTENANCE';
+        }
+      }else{
+        if(unit.STATUS==='MAINTENANCE'){
+          unit.STATUS = unit.PRE_MAINTENANCE_STATUS || 'TERSEDIA';
+          unit.PRE_MAINTENANCE_STATUS = '';
+        }
+      }
+    }
+  }
+
+  if(maintenance.ROOM_ID){
+    const room = DB.ROOMS.find(r=>r.ID===maintenance.ROOM_ID);
+    if(room){
+      if(shouldLock){
+        if(room.STATUS!=='MAINTENANCE'){
+          room.PRE_MAINTENANCE_STATUS = room.STATUS || 'TERSEDIA';
+          room.STATUS = 'MAINTENANCE';
+        }
+      }else{
+        if(room.STATUS==='MAINTENANCE'){
+          room.STATUS = room.PRE_MAINTENANCE_STATUS || 'TERSEDIA';
+          room.PRE_MAINTENANCE_STATUS = '';
+        }
+      }
+    }
+  }
+}
 function maintenanceForm(){
   const pelaksana = DB.USERS.filter(u=>{ const r=roleOf(u); return r && r.PERMS.includes('maintenance.manage'); });
   openModal('Jadwalkan Maintenance', `
     <div class="form-grid">
       <div><label>Jenis *</label><select id="m_TYPE_ID">${selectOptions(DB.MAINTENANCE_TYPES,'ID','NAME',null,true)}</select></div>
       <div><label>Tanggal *</label><input id="m_DATE" type="date" min="${todayStr()}"></div>
-      <div class="form-full"><label>Aset / Lokasi *</label>
+      <div class="form-full">
+        <label>Target Maintenance *</label>
+        <select id="m_TARGET_TYPE" onchange="onMaintenanceTargetTypeChange()">
+          <option value="UNIT">🏷️ Unit Inventaris</option>
+          <option value="ROOM">🚪 Ruangan</option>
+        </select>
+      </div>
+      <div class="form-full" id="m_unit_wrap">
+        <label>Unit Inventaris *</label>
         <select id="m_ASSET_UNIT_ID">${selectOptions(DB.ASSET_UNITS,'ID','INVENTORY_NUMBER',null,true)}</select>
-        <div class="hint">Atau tulis manual di kolom catatan jika bukan unit inventaris.</div>
+        <div class="hint">Atau tulis manual di kolom catatan kalau bukan unit yang terdaftar.</div>
+      </div>
+      <div class="form-full" id="m_room_wrap" style="display:none">
+        <label>Ruangan *</label>
+        <select id="m_ROOM_ID" onchange="onMaintenanceRoomChange()">${selectOptions(DB.ROOMS,'ID','NAME',null,true)}</select>
+        <div class="hint">Ruangan ini otomatis berstatus "Maintenance" (tidak bisa dibooking) selama pekerjaan berlangsung.</div>
+        <div id="m_room_conflict_hint" class="hint" style="color:var(--warning)"></div>
       </div>
       <div class="form-full"><label>Pelaksana</label><select id="m_ASSIGNED_TO">${selectOptions(pelaksana,'ID','NAME',null,true)}</select></div>
       <div class="form-full"><label>Catatan</label><textarea id="m_NOTE"></textarea></div>
@@ -5232,23 +5288,60 @@ function maintenanceForm(){
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveMaintenance()">💾 Simpan</button>`
   ]);
+  setTimeout(onMaintenanceTargetTypeChange,50);
+}
+function onMaintenanceTargetTypeChange(){
+  const type=getValue('m_TARGET_TYPE');
+  const unitWrap=document.getElementById('m_unit_wrap');
+  const roomWrap=document.getElementById('m_room_wrap');
+  if(unitWrap) unitWrap.style.display = type==='ROOM' ? 'none' : '';
+  if(roomWrap) roomWrap.style.display = type==='ROOM' ? '' : 'none';
+  if(type==='ROOM') onMaintenanceRoomChange();
+}
+function onMaintenanceRoomChange(){
+  const roomId=getValue('m_ROOM_ID');
+  const hint=document.getElementById('m_room_conflict_hint');
+  if(!hint)return;
+  if(!roomId){ hint.textContent=''; return; }
+  const today=todayStr();
+  const hasActiveBooking=DB.BOOKINGS.some(b=>b.TYPE==='ROOM'&&b.ITEM_ID===roomId&&['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS)&&(b.END_DATE||b.DATE)>=today);
+  hint.textContent = hasActiveBooking ? '⚠️ Ruangan ini masih punya booking aktif/akan datang. Pastikan sudah dikoordinasikan sebelum menjadwalkan maintenance.' : '';
 }
 async function saveMaintenance(){
   try{
     requirePerm('maintenance.create');
-    const typeId = getValue('m_TYPE_ID'), date = getValue('m_DATE'), unitId = getValue('m_ASSET_UNIT_ID'), assignedTo = getValue('m_ASSIGNED_TO'), note = getValue('m_NOTE');
+    const typeId = getValue('m_TYPE_ID'), date = getValue('m_DATE'), assignedTo = getValue('m_ASSIGNED_TO'), note = getValue('m_NOTE');
+    const targetType = getValue('m_TARGET_TYPE') || 'UNIT';
     if(!typeId || !date){ showToast('Jenis dan tanggal wajib diisi.','warning'); return; }
-    const unit = DB.ASSET_UNITS.find(u=>u.ID===unitId);
+
+    let unitId='', roomId='', assetName='-';
+
+    if(targetType==='ROOM'){
+      roomId = getValue('m_ROOM_ID');
+      if(!roomId){ showToast('Pilih ruangan yang akan dimaintenance.','warning'); return; }
+      const room = DB.ROOMS.find(r=>r.ID===roomId);
+      assetName = room ? ('🚪 Ruangan: '+room.NAME) : '-';
+    }else{
+      unitId = getValue('m_ASSET_UNIT_ID');
+      if(!unitId && !note){ showToast('Pilih unit inventaris, atau isi catatan kalau bukan unit terdaftar.','warning'); return; }
+      const unit = DB.ASSET_UNITS.find(u=>u.ID===unitId);
+      assetName = unit ? ('🏷️ '+nameOf('ASSETS',unit.ASSET_ID)+' ('+unit.INVENTORY_NUMBER+')') : '(lihat catatan)';
+    }
+
     const count = DB.MAINTENANCE.length+1;
     const data = {
       ID:uid('MNT'), NUMBER:'MNT-'+new Date().getFullYear()+'-'+String(count).padStart(5,'0'),
       TYPE_ID:typeId, TYPE_NAME:nameOf('MAINTENANCE_TYPES',typeId),
-      ASSET_UNIT_ID:unitId, ASSET_NAME: unit ? (nameOf('ASSETS',unit.ASSET_ID)+' ('+unit.INVENTORY_NUMBER+')') : (note?'(lihat catatan)':'-'),
+      TARGET_TYPE:targetType,
+      ASSET_UNIT_ID:unitId,
+      ROOM_ID:roomId,
+      ASSET_NAME:assetName,
       ASSIGNED_TO:assignedTo, ASSIGNED_NAME:nameOf('USERS',assignedTo),
       SCHEDULE_DATE:date, STATUS:'TERJADWAL', NOTE:note, CREATED_AT:nowStr()
     };
     DB.MAINTENANCE.push(data);
-    await audit('CREATE','MAINTENANCE',data.ID,'Jadwal maintenance '+data.NUMBER);
+    applyMaintenanceUnitLock(data);
+    await audit('CREATE','MAINTENANCE',data.ID,'Jadwal maintenance '+data.NUMBER+(targetType==='ROOM'?' (ruangan dikunci otomatis)':(data.ASSET_UNIT_ID?' (unit dikunci otomatis)':'')));
     await saveDB();
     closeModal();
     showToast('Maintenance berhasil dijadwalkan.','success');
@@ -5261,13 +5354,13 @@ async function maintStatus(id,status){
     const idx = DB.MAINTENANCE.findIndex(x=>x.ID===id);
     DB.MAINTENANCE[idx].STATUS = status;
     if(status==='SELESAI') DB.MAINTENANCE[idx].COMPLETED_AT = nowStr();
+    applyMaintenanceUnitLock(DB.MAINTENANCE[idx]);
     await audit('STATUS','MAINTENANCE',id,'Status maintenance -> '+status);
     await saveDB();
-    showToast('Status maintenance diperbarui.','success');
+    showToast('Status maintenance diperbarui'+(DB.MAINTENANCE[idx].ASSET_UNIT_ID?' (status unit ikut disesuaikan).':'.'),'success');
     renderMaintenanceTable();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
-
 /* =========================================================
    USERS
 ========================================================= */
