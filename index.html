@@ -813,6 +813,7 @@ const MENUS = [
   {group:'Keuangan',code:'finance',name:'Keuangan Sarpras',icon:'💰',route:'finance',perm:'finance.manage'},
   {group:'Booking',code:'booking-room',name:'Booking Ruangan',icon:'🏢',route:'booking-room',perm:'booking.view',setting:'ENABLE_BOOKING'},
   {group:'Booking',code:'booking-asset',name:'Peminjaman Barang',icon:'📦',route:'booking-asset',perm:'booking.view',setting:'ENABLE_BOOKING'},
+    {group:'Booking',code:'booking-archive',name:'Arsip Booking',icon:'🗄️',route:'booking-archive',perm:'booking.delete'},
   {group:'Booking',code:'stock-take',name:'Ambil Barang Habis Pakai',icon:'🧺',route:'stock-take',perm:'stock.view',setting:'ENABLE_STOCK'},
   {group:'Master Data',code:'master-units',name:'Unit / Fakultas',icon:'🏫',route:'master-units',perm:'setting.manage'},
   {group:'Master Data',code:'master-buildings',name:'Gedung',icon:'🏢',route:'master-buildings',perm:'room.manage'},
@@ -1757,6 +1758,7 @@ function navigate(route){
     'finance':renderFinance,
     'booking-room':()=>renderBookings('ROOM'),
     'booking-asset':()=>renderBookings('ASSET'),
+    'booking-archive':renderBookingArchive,
     'stock-take':renderStockTake,
     'master-units':()=>renderGeneric('UNITS'),
     'master-buildings':()=>renderGeneric('BUILDINGS'),
@@ -1787,6 +1789,7 @@ const ROUTE_SUBTITLES = {
   'finance':'Catatan uang masuk dan uang keluar sarpras',
   'booking-room':'Permohonan pemakaian ruangan',
   'booking-asset':'Peminjaman barang inventaris (bisa lebih dari 1 barang)',
+  'booking-archive':'Data booking yang sudah diarsipkan (bisa dipulihkan)',
   'booking-checkout':'Scan barcode untuk mengeluarkan / mengembalikan barang',
   'stock-take':'Pengambilan barang habis pakai (ATK, dll) — tidak perlu dikembalikan',
   'master-units':'Unit / fakultas pengguna',
@@ -3201,8 +3204,8 @@ function setBookingFilter(s){ STATE.bookingStatusFilter = s; renderBookingStatus
 function renderBookingTable(){
   const type=STATE.bookingTab;
   const keyword=(document.getElementById('bookingSearch')?.value||'').toLowerCase();
-  let rows=DB.BOOKINGS.filter(b=>b.TYPE===type);
-
+  let rows=DB.BOOKINGS.filter(b=>b.TYPE===type && String(b.ARCHIVED).toUpperCase()!=='TRUE');
+  
   if(STATE.bookingStatusFilter)rows=rows.filter(b=>b.STATUS===STATE.bookingStatusFilter);
   if(keyword)rows=rows.filter(r=>Object.values(r).join(' ').toLowerCase().includes(keyword));
 
@@ -3248,9 +3251,12 @@ function renderBookingTable(){
           html+=`<button class="btn btn-success btn-sm" onclick="setBookingStatus('${row.ID}','DISETUJUI')">✅</button><button class="btn btn-danger btn-sm" onclick="setBookingStatus('${row.ID}','DITOLAK')">✖️</button>`;
         }else if(payStatus==='BELUM_INVOICE'){
           html+=`<button class="btn btn-primary btn-sm" onclick="openInvoiceForm('${row.ID}')">🧾 Buat Invoice</button><button class="btn btn-danger btn-sm" onclick="setBookingStatus('${row.ID}','DITOLAK')">✖️</button>`;
-        }else if(payStatus==='MENUNGGU_PEMBAYARAN'){
-          html+=`<span class="badge badge-yellow">Menunggu bayar</span>`;
-        }else if(payStatus==='MENUNGGU_VERIFIKASI'){
+        }else if(payStatus==='MENUNGGU_PEMBAYARAN'){          
+          html+=`<span class="badge badge-yellow">Menunggu bayar</span>`;          
+          if(row.GUEST_CONTACT){            
+            html+=`<a class="btn btn-success btn-sm" href="${buildWhatsappInvoiceLink(row)}" target="_blank" title="Kirim invoice via WhatsApp">📲 WA</a>`;          
+          }        }
+        else if(payStatus==='MENUNGGU_VERIFIKASI'){
           html+=`<button class="btn btn-primary btn-sm" onclick="openPaymentVerifyForm('${row.ID}')">🔍 Verifikasi TF</button>`;
         }
       }
@@ -3761,19 +3767,51 @@ async function setBookingStatus(id,status){
     renderBookingTable();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
-async function deleteBooking(id){
-  try{
-    requirePerm('booking.delete');
-    const booking=DB.BOOKINGS.find(b=>b.ID===id);
-    if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }
-    if(!confirm('Hapus data booking "'+booking.ITEM_NAME+'" ('+booking.ID+') secara permanen?\nTindakan ini akan menghapus riwayat invoice & bukti transfer terkait dan tidak dapat dibatalkan.')) return;
-    DB.BOOKINGS = DB.BOOKINGS.filter(x=>x.ID!==id);
-    await audit('DELETE','BOOKINGS',id,'Hapus data booking '+booking.ITEM_NAME+' oleh '+(booking.USER_NAME||'-'));
-    await saveDB();
-    showToast('Data booking berhasil dihapus.','success');
-    renderBookingTable();
-  }catch(error){ showToast(getErrorMessage(error),'error'); }
-}
+async function deleteBooking(id){  
+  try{    
+    requirePerm('booking.delete');    
+    const booking=DB.BOOKINGS.find(b=>b.ID===id);    
+    if(!booking){ showToast('Booking tidak ditemukan.','error'); return; }    
+    if(!confirm('Arsipkan data booking "'+booking.ITEM_NAME+'" ('+booking.ID+')?\nData akan hilang dari daftar utama, tapi tetap tersimpan (termasuk bukti transfer) untuk keperluan audit dan bisa dipulihkan lewat menu Arsip Booking.')) return;    
+    booking.ARCHIVED='TRUE';    
+    booking.ARCHIVED_AT=nowStr();    
+    booking.ARCHIVED_BY=STATE.currentUser.NAME;    
+    await audit('ARCHIVE','BOOKINGS',id,'Arsipkan data booking '+booking.ITEM_NAME+' oleh '+(booking.USER_NAME||'-'));    
+    await saveDB();    
+    showToast('Data booking berhasil diarsipkan.','success');    
+    renderBookingTable();  
+  }catch(error){ 
+    showToast(getErrorMessage(error),'error'); 
+  }}
+function renderBookingArchive(){  
+  try{    
+    requirePerm('booking.delete');    
+    const content=document.getElementById('content');    
+    content.innerHTML=`      
+    <div class="page-title">🗄️ Arsip Booking</div>      
+    <div class="page-subtitle">Data booking yang sudah diarsipkan (bukan dihapus permanen) — masih tersimpan untuk keperluan audit dan bisa dipulihkan.</div>      
+    <div class="card">        
+    <div class="toolbar"><div class="toolbar-left"><input id="archiveSearch" class="search-box" placeholder="🔎 Cari arsip..." oninput="renderBookingArchiveTable()"></div></div>        
+    <div id="archiveTable"></div>      
+    </div>    `;    
+    renderBookingArchiveTable();  
+  }catch(error){ 
+    showToast(getErrorMessage(error),'error'); }} 
+function renderBookingArchiveTable(){  
+  const keyword=(document.getElementById('archiveSearch')?.value||'').toLowerCase();  
+  let rows=(DB.BOOKINGS||[]).filter(function(b){ return String(b.ARCHIVED).toUpperCase()==='TRUE'; });  
+  if(keyword) rows=rows.filter(function(r){ return Object.values(r).join(' ').toLowerCase().includes(keyword); });  
+  rows.sort(function(a,b){ return (b.ARCHIVED_AT||'').localeCompare(a.ARCHIVED_AT||''); });   
+  const displayRows=rows.map(function(r){    
+    return Object.assign({},r,{TYPE_LABEL: r.TYPE==='ROOM' ? 'Ruangan' : 'Barang'});  
+  });   
+  document.getElementById('archiveTable').innerHTML=renderTableHtml(displayRows,    [['ID','Kode Booking'],['TYPE_LABEL','Jenis'],['ITEM_NAME','Item'],['USER_NAME','Pengguna'],['STATUS','Status Terakhir'],['ARCHIVED_AT','Diarsipkan'],['ARCHIVED_BY','Oleh']],    
+function(row){      
+  return `<button class="btn btn-success btn-sm" onclick="restoreBooking('${row.ID}')">♻️ Pulihkan</button>        
+  <button class="btn btn-danger btn-sm" onclick="purgeBooking('${row.ID}')">🗑️ Hapus Permanen</button>`;    
+});} 
+async function restoreBooking(id){  try{    requirePerm('booking.delete');    const booking=DB.BOOKINGS.find(function(b){ return b.ID===id; });    if(!booking){ showToast('Data tidak ditemukan.','error'); return; }    booking.ARCHIVED='FALSE';    booking.ARCHIVED_AT='';    booking.ARCHIVED_BY='';    await audit('RESTORE','BOOKINGS',id,'Pulihkan data booking dari arsip: '+booking.ITEM_NAME);    await saveDB();    showToast('Data booking berhasil dipulihkan.','success');    renderBookingArchiveTable();  }catch(error){ showToast(getErrorMessage(error),'error'); }} 
+async function purgeBooking(id){  try{    requirePerm('booking.delete');    const booking=DB.BOOKINGS.find(function(b){ return b.ID===id; });    if(!booking){ showToast('Data tidak ditemukan.','error'); return; }    if(!confirm('PERINGATAN: ini akan menghapus data booking "'+booking.ITEM_NAME+'" ('+booking.ID+') SECARA PERMANEN dan tidak bisa dipulihkan lagi, termasuk bukti transfer dan riwayat invoice-nya. Lanjutkan?')) return;    DB.BOOKINGS=DB.BOOKINGS.filter(function(x){ return x.ID!==id; });    await audit('PURGE','BOOKINGS',id,'Hapus permanen data booking dari arsip: '+booking.ITEM_NAME);    await saveDB();    showToast('Data booking dihapus permanen.','success');    renderBookingArchiveTable();  }catch(error){ showToast(getErrorMessage(error),'error'); }}
 async function expireOverdueInvoices(){
   const today=todayStr();
   let changed=false;
@@ -3801,7 +3839,7 @@ async function expireOverdueInvoices(){
    INVOICE & VERIFIKASI PEMBAYARAN (khusus booking tamu)
 ========================================================= */
 let CURRENT_INVOICE_BOOKING_ID=null;
-
+function buildWhatsappInvoiceLink(booking){  let phone=String(booking.GUEST_CONTACT||'').replace(/[^0-9]/g,'');  if(phone.startsWith('0')) phone='62'+phone.substring(1);  else if(!phone.startsWith('62')) phone='62'+phone;   const message = 'Halo '+String(booking.USER_NAME||'').replace(' (Tamu)','')+    ', berikut invoice booking Anda:\n'+    'Kode Booking: '+booking.ID+'\n'+    'Item: '+booking.ITEM_NAME+'\n'+    'Total Tagihan: '+formatCurrency(booking.INVOICE_AMOUNT||0)+'\n'+    'Batas Waktu Bayar: '+(booking.INVOICE_DUE_AT||'-')+'\n'+    (booking.INVOICE_NOTE?('Info Pembayaran: '+booking.INVOICE_NOTE+'\n'):'')+    'Setelah transfer, mohon upload bukti transfer melalui menu "Cek Status / Upload Bukti Transfer" di halaman login aplikasi dengan memasukkan kode booking di atas. Terima kasih.';   return 'https://wa.me/'+phone+'?text='+encodeURIComponent(message);}
 function openInvoiceForm(id){
   requirePerm('booking.approve');
   const booking=DB.BOOKINGS.find(b=>b.ID===id);
