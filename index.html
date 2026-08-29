@@ -781,6 +781,7 @@ const PERMISSIONS = [
   ['finance.manage','Mengelola Keuangan Sarpras (Khusus Admin)','finance'],
   ['duty.view','Melihat Jadwal Piket','duty'],
   ['duty.manage','Mengelola Jadwal Piket','duty'],
+  ['vehicle.manage','Mengelola Buku Tamu Kendaraan','vehicle'],
   ['audit.view','Melihat Log Aktivitas','audit']
 ];
 
@@ -789,8 +790,7 @@ const DEFAULT_ROLES = [
   {CODE:'PENGELOLA',NAME:'Pengelola Sarpras',DESCRIPTION:'Mengelola operasional sarana & prasarana sehari-hari.',
     PERMS:['dashboard.view','asset.view','asset.manage','asset_unit.view','asset_unit.manage','room.view','room.manage',
       'booking.view','booking.approve','booking.cancel','booking.checkout','stock.view','stock.take','stock.approve','report.view','report.assign','report.close',
-      'maintenance.view','maintenance.create','maintenance.manage','audit.view','duty.manage']},  {CODE:'PELAKSANA',NAME:'Pelaksana',DESCRIPTION:'Teknisi / petugas lapangan yang mengerjakan laporan & maintenance.',
-    PERMS:['dashboard.view','asset_unit.view','room.view','booking.view','booking.checkout','stock.view','stock.take','report.view','report.process','maintenance.view','maintenance.manage']},
+      'maintenance.view','maintenance.create','maintenance.manage','audit.view','duty.manage','vehicle.manage']},    PERMS:['dashboard.view','asset_unit.view','room.view','booking.view','booking.checkout','stock.view','stock.take','report.view','report.process','maintenance.view','maintenance.manage']},
   {CODE:'DOSEN',NAME:'Dosen',DESCRIPTION:'Pengguna sivitas akademik — dosen.',
     PERMS:['dashboard.view','room.view','booking.view','booking.create','stock.view','stock.take','report.view','report.create']},
   {CODE:'MAHASISWA',NAME:'Mahasiswa',DESCRIPTION:'Pengguna sivitas akademik — mahasiswa.',
@@ -799,8 +799,8 @@ const DEFAULT_ROLES = [
     PERMS:['dashboard.view','asset.view','room.view','booking.view','stock.view','report.view','maintenance.view','audit.view']},
   {CODE:'CLEANING',NAME:'Cleaning Service',DESCRIPTION:'Petugas kebersihan — melihat jadwal piket sendiri.',
     PERMS:['dashboard.view','duty.view']},
-  {CODE:'SATPAM',NAME:'Satpam',DESCRIPTION:'Petugas keamanan — melihat jadwal piket sendiri.',
-    PERMS:['dashboard.view','duty.view']}
+{CODE:'SATPAM',NAME:'Satpam',DESCRIPTION:'Petugas keamanan — melihat jadwal piket sendiri & mengelola buku tamu kendaraan.',    
+ PERMS:['dashboard.view','duty.view','vehicle.manage']}
 ];
 
 const MENUS = [
@@ -810,6 +810,7 @@ const MENUS = [
   {group:'Sarpras',code:'reports',name:'Laporan Kerusakan',icon:'⚠️',route:'reports',perm:'report.view',setting:'ENABLE_REPORT'},
   {group:'Sarpras',code:'maintenance',name:'Maintenance',icon:'🔧',route:'maintenance',perm:'maintenance.view',setting:'ENABLE_MAINTENANCE'},
   {group:'Sarpras',code:'duty-schedule',name:'Jadwal Piket',icon:'🧹',route:'duty-schedule',perm:'duty.view'},
+    {group:'Sarpras',code:'vehicle-log',name:'Buku Tamu Kendaraan',icon:'🚗',route:'vehicle-log',perm:'vehicle.manage'},
   {group:'Keuangan',code:'finance',name:'Keuangan Sarpras',icon:'💰',route:'finance',perm:'finance.manage'},
   {group:'Booking',code:'booking-room',name:'Booking Ruangan',icon:'🏢',route:'booking-room',perm:'booking.view',setting:'ENABLE_BOOKING'},
   {group:'Booking',code:'booking-asset',name:'Peminjaman Barang',icon:'📦',route:'booking-asset',perm:'booking.view',setting:'ENABLE_BOOKING'},
@@ -952,8 +953,7 @@ async function buildDefaultDB(){
     ROLES:[], USERS:[], UNITS:[], BUILDINGS:[], ROOMS:[],
     ASSET_CATEGORIES:[], ASSET_CONDITIONS:[], ASSETS:[], ASSET_UNITS:[],
     BOOKINGS:[], REPORT_CATEGORIES:[], REPORTS:[],
-    MAINTENANCE_TYPES:[], MAINTENANCE:[], STOCK_TAKEOUTS:[], FINANCE:[], DUTY_SCHEDULES:[],  APP_SETTINGS:{
-      APP_NAME:'SIM-SARPRAS',
+    MAINTENANCE_TYPES:[], MAINTENANCE:[], STOCK_TAKEOUTS:[], FINANCE:[], DUTY_SCHEDULES:[], VEHICLE_LOGS:[],      APP_NAME:'SIM-SARPRAS',
       APP_DESCRIPTION:'Sistem Informasi Manajemen Sarana dan Prasarana',
       APP_VERSION:'1.0.0',
       ENABLE_BOOKING:'TRUE',
@@ -1098,7 +1098,8 @@ function migrateDB(){
   });
   if(!Array.isArray(DB.STOCK_TAKEOUTS))DB.STOCK_TAKEOUTS=[];
   if(!Array.isArray(DB.FINANCE))DB.FINANCE=[];
-    if(!Array.isArray(DB.DUTY_SCHEDULES))DB.DUTY_SCHEDULES=[];
+  if(!Array.isArray(DB.DUTY_SCHEDULES))DB.DUTY_SCHEDULES=[];
+  if(!Array.isArray(DB.VEHICLE_LOGS))DB.VEHICLE_LOGS=[];
   if(!DB.SEQ)DB.SEQ={};
   if(DB.SEQ.STOCK_TAKEOUTS===undefined)DB.SEQ.STOCK_TAKEOUTS=0;
   if(!DB.APP_SETTINGS)DB.APP_SETTINGS={};
@@ -1755,6 +1756,7 @@ function navigate(route){
     'reports':renderReports,
     'maintenance':renderMaintenance,
     'duty-schedule':renderDutySchedule,
+    'vehicle-log':renderVehicleLog,
     'finance':renderFinance,
     'booking-room':()=>renderBookings('ROOM'),
     'booking-asset':()=>renderBookings('ASSET'),
@@ -1786,6 +1788,7 @@ const ROUTE_SUBTITLES = {
   'reports':'Laporan kerusakan & kebutuhan sarpras',
   'maintenance':'Jadwal & riwayat pemeliharaan',
   'duty-schedule':'Jadwal tugas harian Cleaning Service & Satpam',
+  'vehicle-log':'Catatan keamanan kendaraan masuk dan keluar area kampus',
   'finance':'Catatan uang masuk dan uang keluar sarpras',
   'booking-room':'Permohonan pemakaian ruangan',
   'booking-asset':'Peminjaman barang inventaris (bisa lebih dari 1 barang)',
@@ -1960,8 +1963,7 @@ function statusBadge(value){
   const upper = text.toUpperCase();
   let cls = 'badge-gray';
   if(['AKTIF','ACTIVE','TRUE','APPROVED','DISETUJUI','SELESAI','TERSEDIA','BAIK','LUNAS','GRATIS'].includes(upper)) cls='badge-green';
-  else if(['MENUNGGU','PENDING','DIPROSES','MAINTENANCE','DITINJAU','DITUGASKAN','TERJADWAL','DIAMBIL','DIPINJAM','MENUNGGU_PEMBAYARAN','MENUNGGU_VERIFIKASI'].includes(upper)) cls='badge-yellow';
-  else if(['NONAKTIF','INACTIVE','FALSE','DITOLAK','REJECTED','RUSAK','RUSAK_BERAT','HILANG','DIBATALKAN','DITUTUP','KADALUARSA'].includes(upper)) cls='badge-red';
+  else if(['MENUNGGU','PENDING','DIPROSES','MAINTENANCE','DITINJAU','DITUGASKAN','TERJADWAL','DIAMBIL','DIPINJAM','MENUNGGU_PEMBAYARAN','MENUNGGU_VERIFIKASI','DI_DALAM'].includes(upper)) cls='badge-yellow';  else if(['NONAKTIF','INACTIVE','FALSE','DITOLAK','REJECTED','RUSAK','RUSAK_BERAT','HILANG','DIBATALKAN','DITUTUP','KADALUARSA'].includes(upper)) cls='badge-red';
   else if(upper==='BELUM_INVOICE') cls='badge-gray';
   else cls='badge-blue';
   const label = {
@@ -1971,9 +1973,11 @@ function statusBadge(value){
     MENUNGGU_VERIFIKASI:'Menunggu Verifikasi TF',
     LUNAS:'Lunas',
     GRATIS:'Gratis (Internal)',
-    KADALUARSA:'Kadaluarsa (Lewat Bayar)'
+    KADALUARSA:'Kadaluarsa (Lewat Bayar)',    
+    DI_DALAM:'Di Dalam',    
+    SUDAH_KELUAR:'Sudah Keluar'  
   }[upper] || text;
-  return '<span class="badge '+cls+'">'+escapeHtml(label)+'</span>';
+    return '<span class="badge '+cls+'">'+escapeHtml(label)+'</span>';
 }
 
 function formatCurrency(value){
@@ -5371,6 +5375,16 @@ async function maintStatus(id,status){
     renderMaintenanceTable();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
+/* ========================================================= 
+BUKU TAMU KENDARAAN (khusus Satpam)
+========================================================= */
+  function renderVehicleLog(){  try{    requirePerm('vehicle.manage');    const content=document.getElementById('content');    const today=todayStr();    const todayLogs=(DB.VEHICLE_LOGS||[]).filter(function(v){ return v.DATE===today; });    const stillInside=todayLogs.filter(function(v){ return v.STATUS==='DI_DALAM'; }).length;     content.innerHTML=`      <div class="page-title">🚗 Buku Tamu Kendaraan</div>      <div class="page-subtitle">Catatan keamanan kendaraan masuk dan keluar area kampus.</div>      <div class="stats">        ${stat('Kendaraan Masuk Hari Ini',todayLogs.length,'🚙','#EEF0FF','#4338CA')}        ${stat('Sedang di Dalam',stillInside,'🅿️','#FFFBEB','#B45309')}      </div> <div class="card">        <div class="toolbar">          <div class="toolbar-left">            <input id="vlSearch" class="search-box" placeholder="🔎 Cari nopol/nama..." oninput="renderVehicleLogTable()">            <input id="vlDateFilter" type="date" value="${today}" onchange="renderVehicleLogTable()">          </div>          <div class="toolbar-right">            <button class="btn btn-primary" onclick="vehicleLogForm()">+ Catat Kendaraan Masuk</button>          </div>        </div>        <div id="vehicleLogTable"></div>      </div>    `;    renderVehicleLogTable();  }catch(error){    showToast(getErrorMessage(error),'error');  }}
+  function renderVehicleLogTable(){  const keyword=(document.getElementById('vlSearch')?.value||'').toLowerCase();  const dateFilter=document.getElementById('vlDateFilter')?.value||'';   let rows=(DB.VEHICLE_LOGS||[]).slice();  if(dateFilter) rows=rows.filter(function(r){ return r.DATE===dateFilter; });  if(keyword) rows=rows.filter(function(r){ return Object.values(r).join(' ').toLowerCase().includes(keyword); });   rows.sort(function(a,b){ return (b.TIME_IN||'').localeCompare(a.TIME_IN||''); });   document.getElementById('vehicleLogTable').innerHTML=renderTableHtml(rows,    [['PLATE_NUMBER','Nopol'],['DRIVER_NAME','Nama Pengendara'],['DOCUMENT_TYPE','Dokumen'],['DOCUMENT_NUMBER','No. Dokumen'],['PURPOSE','Keperluan'],['TIME_IN','Jam Masuk'],['TIME_OUT','Jam Keluar'],['STATUS','Status'],['RECORDED_BY','Dicatat Oleh']],    function(row){      let html=`<button class="btn btn-light btn-sm" onclick='vehicleLogDetail(${safeJson(row)})'>🔍</button>`;      if(row.STATUS==='DI_DALAM'){        html+=`<button class="btn btn-success btn-sm" onclick="vehicleCheckout('${row.ID}')">🚪 Catat Keluar</button>`;      }      return html;    });}
+  function vehicleLogForm(){  requirePerm('vehicle.manage');  const now=new Date();  const pad=function(n){ return String(n).padStart(2,'0'); };  const timeNow=pad(now.getHours())+':'+pad(now.getMinutes());   openModal('🚗 Catat Kendaraan Masuk', `    <div class="form-grid">      <div><label>Nomor Polisi *</label><input id="vl_PLATE_NUMBER" placeholder="Contoh: P 1234 AB" style="text-transform:uppercase"></div>      <div><label>Jenis Kendaraan</label><select id="vl_VEHICLE_TYPE">        <option value="MOTOR">Motor</option>        <option value="MOBIL">Mobil</option>        <option value="LAINNYA">Lainnya</option>      </select></div>      <div class="form-full"><label>Nama Pengendara *</label><input id="vl_DRIVER_NAME"></div>      <div><label>Jenis Dokumen *</label><select id="vl_DOCUMENT_TYPE">        <option value="STNK">STNK</option>        <option value="KTP">KTP</option>        <option value="KTM">KTM</option>      </select></div>      <div><label>No. Dokumen *</label><input id="vl_DOCUMENT_NUMBER" placeholder="Sesuai dokumen yang ditunjukkan"></div>      <div class="form-full"><label>Tujuan/Keperluan *</label><input id="vl_PURPOSE" placeholder="Contoh: Tamu rapat di Gedung A, Antar barang"></div>      <div><label>Tanggal</label><input id="vl_DATE" type="date" value="${todayStr()}"></div>      <div><label>Jam Masuk</label><input id="vl_TIME_IN" type="time" value="${timeNow}"></div>      <div class="form-full"><label>Catatan</label><textarea id="vl_NOTE"></textarea></div>    </div>    <div class="hint" style="margin-top:6px">Kombinasi Nomor Polisi + Nomor Dokumen (STNK/KTP/KTM) dipakai sebagai verifikasi identitas kendaraan & pengendara yang masuk area kampus.</div>  `,[    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,    `<button class="btn btn-primary" onclick="saveVehicleLog()">💾 Simpan</button>`  ]);} 
+  async function saveVehicleLog(){  try{    requirePerm('vehicle.manage');    const plate=(getValue('vl_PLATE_NUMBER')||'').trim().toUpperCase();    const vehicleType=getValue('vl_VEHICLE_TYPE');    const driverName=getValue('vl_DRIVER_NAME');    const docType=getValue('vl_DOCUMENT_TYPE');    const docNumber=getValue('vl_DOCUMENT_NUMBER');    const purpose=getValue('vl_PURPOSE');    const date=getValue('vl_DATE')||todayStr();    const timeIn=getValue('vl_TIME_IN');    const note=getValue('vl_NOTE');     if(!plate||!driverName||!docNumber||!purpose){      showToast('Nomor polisi, nama pengendara, nomor dokumen, dan keperluan wajib diisi.','warning');      return;    }     const data={      ID:uid('VLG'),      PLATE_NUMBER:plate,      VEHICLE_TYPE:vehicleType,      DRIVER_NAME:driverName,      DOCUMENT_TYPE:docType,      DOCUMENT_NUMBER:docNumber,      PURPOSE:purpose,      DATE:date,      TIME_IN:timeIn,      TIME_OUT:'',      STATUS:'DI_DALAM',      NOTE:note,      RECORDED_BY:STATE.currentUser.NAME,      CREATED_AT:nowStr()    };DB.VEHICLE_LOGS.push(data);    await audit('CREATE','VEHICLE_LOGS',data.ID,'Catat kendaraan masuk: '+plate+' ('+driverName+')');    await saveDB();    closeModal();    showToast('Kendaraan masuk berhasil dicatat.','success');    renderVehicleLog();  }catch(error){    showToast(getErrorMessage(error),'error');  }}
+  async function vehicleCheckout(id){  try{    requirePerm('vehicle.manage');    const row=DB.VEHICLE_LOGS.find(function(v){ return v.ID===id; });    if(!row){ showToast('Data tidak ditemukan.','error'); return; }    if(row.STATUS!=='DI_DALAM'){ showToast('Kendaraan ini sudah tercatat keluar.','warning'); return; }    const now=new Date();    const pad=function(n){ return String(n).padStart(2,'0'); };    row.TIME_OUT=pad(now.getHours())+':'+pad(now.getMinutes());    row.STATUS='SUDAH_KELUAR';    await audit('UPDATE','VEHICLE_LOGS',id,'Catat kendaraan keluar: '+row.PLATE_NUMBER);    await saveDB();    showToast('Kendaraan keluar berhasil dicatat.','success');    renderVehicleLogTable();  }catch(error){ showToast(getErrorMessage(error),'error'); }}
+  function vehicleLogDetail(row){  openModal('Detail Kendaraan', `    <div class="kv"><span>Nomor Polisi</span><b>${escapeHtml(row.PLATE_NUMBER)}</b></div>    <div class="kv"><span>Jenis Kendaraan</span><b>${escapeHtml(row.VEHICLE_TYPE||'-')}</b></div>    <div class="kv"><span>Nama Pengendara</span><b>${escapeHtml(row.DRIVER_NAME)}</b></div>    <div class="kv"><span>Dokumen</span><b>${escapeHtml(row.DOCUMENT_TYPE)} — ${escapeHtml(row.DOCUMENT_NUMBER)}</b></div>    <div class="kv"><span>Keperluan</span><b>${escapeHtml(row.PURPOSE)}</b></div>    <div class="kv"><span>Tanggal</span><b>${escapeHtml(row.DATE)}</b></div>    <div class="kv"><span>Jam Masuk</span><b>${escapeHtml(row.TIME_IN||'-')}</b></div>    <div class="kv"><span>Jam Keluar</span><b>${escapeHtml(row.TIME_OUT||'Masih di dalam')}</b></div>    <div class="kv"><span>Status</span>${statusBadge(row.STATUS)}</div>    <div class="kv"><span>Dicatat Oleh</span><b>${escapeHtml(row.RECORDED_BY||'-')}</b></div>    ${row.NOTE?`<div class="kv"><span>Catatan</span><b>${escapeHtml(row.NOTE)}</b></div>`:''}  `,[`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);}
+  
 /* =========================================================
    JADWAL PIKET — CLEANING SERVICE & SATPAM
 ========================================================= */
