@@ -3207,9 +3207,10 @@ function renderBookingTable(){
       let html='';
       const isOwner=STATE.currentUser.ID&&STATE.currentUser.ID===row.USER_ID;
 
-      if(type==='ASSET')html+=`<button class="btn btn-light btn-sm" onclick='assetBookingDetail(${safeJson(row)})'>🔍</button>`;
-      html+=`<button class="btn btn-light btn-sm" onclick="showBookingQr('${row.ID}')" title="Lihat QR Booking">🔳</button>`;
+      if(type==='ASSET')html+=`<button class="btn btn-light btn-sm" onclick='assetBookingDetail(${safeJson(row)})' title="Lihat detail peminjaman">🔍</button>`;
+      else if(type==='ROOM')html+=`<button class="btn btn-light btn-sm" onclick='roomBookingDetail(${safeJson(row)})' title="Lihat detail booking">🔍</button>`;
 
+      html+=`<button class="btn btn-light btn-sm" onclick="showBookingQr('${row.ID}')" title="Lihat QR Booking">🔳</button>`;
       if(String(row.IS_GUEST).toUpperCase()==='TRUE'&&row.GUEST_CONTACT){
         html+=`<button class="btn btn-light btn-sm" onclick="alert('Kontak tamu: ${escapeHtml(row.GUEST_CONTACT)}\\nInstansi/Keperluan: ${escapeHtml(row.GUEST_INSTANSI||'-')}')" title="Lihat kontak tamu">📞</button>`;
       }
@@ -3685,6 +3686,37 @@ function assetBookingDetail(row){
         </table>
       </div>
     </div>
+  `,[`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);
+}
+function roomBookingDetail(row){
+  const room=DB.ROOMS.find(r=>r.ID===row.ITEM_ID);
+  const buildingName = room ? nameOf('BUILDINGS',room.BUILDING_ID) : '-';
+  const isGuestRow=String(row.IS_GUEST).toUpperCase()==='TRUE';
+  const payStatus = row.PAYMENT_STATUS || (isGuestRow?'BELUM_INVOICE':'GRATIS');
+
+  openModal('Detail Booking Ruangan', `
+    <div class="kv"><span>Kode Booking</span><b>${escapeHtml(row.ID)}</b></div>
+    <div class="kv"><span>Ruangan</span><b>${escapeHtml(row.ITEM_NAME)}</b></div>
+    <div class="kv"><span>Gedung</span><b>${escapeHtml(buildingName)}</b></div>
+    <div class="kv"><span>Pemohon</span><b>${escapeHtml(row.USER_NAME)}</b></div>
+    <div class="kv"><span>Kategori</span><b>${isGuestRow?'Tamu':'Internal/Staf'}</b></div>
+    <div class="kv"><span>Status</span>${statusBadge(row.STATUS)}</div>
+    <div class="kv"><span>Status Pembayaran</span>${statusBadge(payStatus)}</div>
+    <div class="kv"><span>Tanggal</span><b>${escapeHtml(row.DATE)} s/d ${escapeHtml(row.END_DATE||row.DATE)}</b></div>
+    <div class="kv"><span>Waktu</span><b>${escapeHtml(row.START_TIME||'-')}–${escapeHtml(row.END_TIME||'-')}</b></div>
+    <div class="kv"><span>Akumulasi</span><b>${escapeHtml(String(row.DURATION_DAYS||0))} hari / ${escapeHtml(String(row.DURATION_HOURS||0))} jam</b></div>
+    <div class="kv"><span>Tujuan/Keperluan</span><b>${escapeHtml(row.PURPOSE||'-')}</b></div>
+    ${room && room.INCLUDED_FACILITIES ? `<div class="kv"><span>Sudah Termasuk Tarif</span><b>${escapeHtml(room.INCLUDED_FACILITIES)}</b></div>` : ''}
+    ${row.FACILITY_LIST ? `<div class="kv"><span>Fasilitas Tambahan</span><b>${escapeHtml(row.FACILITY_LIST)}</b></div>` : ''}
+    <div class="kv"><span>Biaya Ruangan</span><b>${escapeHtml(formatCurrency(row.BASE_FEE||0))}</b></div>
+    <div class="kv"><span>Biaya Fasilitas Tambahan</span><b>${escapeHtml(formatCurrency(row.FACILITY_FEE||0))}</b></div>
+    ${row.DISCOUNT_AMOUNT>0?`<div class="kv"><span>Diskon</span><b>-${escapeHtml(formatCurrency(row.DISCOUNT_AMOUNT))} (${escapeHtml(row.DISCOUNT_REASON||'-')})</b></div>`:''}
+    <div class="kv"><span>Total Biaya</span><b>${escapeHtml(formatCurrency(row.TOTAL_FEE||0))}</b></div>
+    ${row.INVOICE_AMOUNT?`<div class="kv"><span>Nominal Invoice</span><b>${escapeHtml(formatCurrency(row.INVOICE_AMOUNT))}</b></div>`:''}
+    ${row.INVOICE_DUE_AT?`<div class="kv"><span>Batas Waktu Bayar</span><b>${escapeHtml(row.INVOICE_DUE_AT)}</b></div>`:''}
+    ${isGuestRow?`<div class="kv"><span>Kontak Tamu</span><b>${escapeHtml(row.GUEST_CONTACT||'-')}</b></div>
+    <div class="kv"><span>Instansi/Keperluan Tamu</span><b>${escapeHtml(row.GUEST_INSTANSI||'-')}</b></div>`:''}
+    ${row.NOTE?`<div class="kv"><span>Catatan</span><b>${escapeHtml(row.NOTE)}</b></div>`:''}
   `,[`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);
 }
 async function setBookingStatus(id,status){
