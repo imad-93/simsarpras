@@ -5391,8 +5391,7 @@ function renderDutySchedule(){
             <input id="dutyDateFilter" type="date" onchange="renderDutyTable()">
           </div>
           <div class="toolbar-right">
-            ${canManage?'<button class="btn btn-primary" onclick="dutyForm()">+ Tambah Jadwal</button>':''}
-          </div>
+ ${canManage?'<button class="btn btn-primary" onclick="dutyForm()">+ Tambah Jadwal</button><button class="btn btn-light" onclick="dutyBulkForm()">⚡ Generate Mingguan</button>':''}          </div>
         </div>
         <div id="dutyTable"></div>
       </div>
@@ -5429,92 +5428,23 @@ function renderDutyTable(){
 
   rows.sort(function(a,b){ return (a.DATE+a.SHIFT_START).localeCompare(b.DATE+b.SHIFT_START); });
 
-  const displayRows=rows.map(function(r){
-    return Object.assign({},r,{
-      ROLE_LABEL: r.ROLE_TYPE==='CLEANING' ? '🧹 Cleaning Service' : '🛡️ Satpam',
-      SHIFT: (r.SHIFT_START||'-')+'–'+(r.SHIFT_END||'-')
-    });
-  });
-
-  document.getElementById('dutyTable').innerHTML=renderTableHtml(displayRows,
-    [['DATE','Tanggal'],['ROLE_LABEL','Jenis'],['USER_NAME','Petugas'],['LOCATION','Lokasi'],['SHIFT','Jam Tugas'],['NOTE','Catatan']],
+const taskLabels={KEBERSIHAN:'🧹 Kebersihan',KONTROL_ATK:'📦 Kontrol ATK',KEDUANYA:'🧹📦 Kebersihan+ATK'};  const displayRows=rows.map(function(r){    return Object.assign({},r,{      ROLE_LABEL: r.ROLE_TYPE==='CLEANING' ? '🧹 Cleaning Service' : '🛡️ Satpam',      SHIFT: (r.SHIFT_START||'-')+'–'+(r.SHIFT_END||'-'),      TASK_LABEL: r.TASK_TYPE ? (taskLabels[r.TASK_TYPE]||r.TASK_TYPE) : '-'    });  });   document.getElementById('dutyTable').innerHTML=renderTableHtml(displayRows,    [['DATE','Tanggal'],['ROLE_LABEL','Jenis'],['USER_NAME','Petugas'],['TASK_LABEL','Tugas'],['LOCATION','Lokasi'],['SHIFT','Jam Tugas'],['NOTE','Catatan']],
     function(row){
       if(!canManage) return '<span style="color:#9AA3B5;font-size:11px">-</span>';
       return `<button class="btn btn-light btn-sm" onclick='dutyForm(${safeJson(row)})'>✏️</button>
         <button class="btn btn-danger btn-sm" onclick="dutyDelete('${row.ID}')">🗑️</button>`;
     });
 }
-
-function dutyForm(row){
-  requirePerm('duty.manage');
-  row=row||{};
-
-  openModal(row.ID?'Edit Jadwal Piket':'Tambah Jadwal Piket', `
-    <div class="form-grid">
-      <div><label>Jenis Petugas *</label><select id="d_ROLE_TYPE" onchange="onDutyRoleTypeChange()">
-        <option value="CLEANING" ${row.ROLE_TYPE==='CLEANING'?'selected':''}>🧹 Cleaning Service</option>
-        <option value="SATPAM" ${row.ROLE_TYPE==='SATPAM'?'selected':''}>🛡️ Satpam</option>
-      </select></div>
-      <div><label>Petugas *</label><select id="d_USER_ID"><option value="">— Memuat —</option></select></div>
-      <div><label>Tanggal *</label><input id="d_DATE" type="date" value="${row.DATE||todayStr()}"></div>
-      <div></div>
-      <div><label>Jam Mulai *</label><input id="d_SHIFT_START" type="time" value="${row.SHIFT_START||''}"></div>
-      <div><label>Jam Selesai *</label><input id="d_SHIFT_END" type="time" value="${row.SHIFT_END||''}"></div>
-      <div class="form-full">
-        <label>Jenis Lokasi</label>
-        <select id="d_LOCATION_TYPE" onchange="onDutyLocationTypeChange()">
-          <option value="ROOM" ${!row.LOCATION_TYPE||row.LOCATION_TYPE==='ROOM'?'selected':''}>Ruangan Terdaftar</option>
-          <option value="OTHER" ${row.LOCATION_TYPE==='OTHER'?'selected':''}>Area Lain (bebas)</option>
-        </select>
-      </div>
-      <div class="form-full" id="d_room_wrap">
-        <label>Gedung</label>
-        <select id="d_BUILDING_SELECT" onchange="onDutyBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select>
-        <label style="margin-top:8px">Ruangan *</label>
-        <select id="d_ROOM_ID"><option value="">— Pilih Gedung dulu —</option></select>
-      </div>
-      <div class="form-full" id="d_other_wrap" style="display:none">
-        <label>Nama Lokasi *</label>
-        <input id="d_LOCATION_NAME" value="${escapeHtml(row.LOCATION_NAME||'')}" placeholder="Contoh: Pos Satpam Gerbang Utama, Area Parkir">
-      </div>
-      <div class="form-full"><label>Catatan</label><textarea id="d_NOTE">${escapeHtml(row.NOTE||'')}</textarea></div>
-    </div>
-  `,[
-    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
-    `<button class="btn btn-primary" onclick="saveDuty('${row.ID||''}')">💾 Simpan</button>`
-  ]);
-
-  setTimeout(function(){
-    onDutyRoleTypeChange();
-    const userSelect=document.getElementById('d_USER_ID');
-    if(userSelect && row.USER_ID) userSelect.value=row.USER_ID;
-
-    onDutyLocationTypeChange();
-    if((row.LOCATION_TYPE||'ROOM')!=='OTHER' && row.BUILDING_ID){
-      document.getElementById('d_BUILDING_SELECT').value=row.BUILDING_ID;
-      onDutyBuildingChange();
-      const roomSelect=document.getElementById('d_ROOM_ID');
-      if(roomSelect) roomSelect.value=row.ROOM_ID||'';
-    }
-  },50);
-}
-
-function onDutyRoleTypeChange(){
-  const type=getValue('d_ROLE_TYPE');
-  const select=document.getElementById('d_USER_ID');
-  if(!select)return;
-  const staff=DB.USERS.filter(function(u){ const r=roleOf(u); return r && r.CODE===type; });
-  select.innerHTML=selectOptions(staff,'ID','NAME',null,true);
-}
-
-function onDutyLocationTypeChange(){
-  const type=getValue('d_LOCATION_TYPE');
-  const roomWrap=document.getElementById('d_room_wrap');
-  const otherWrap=document.getElementById('d_other_wrap');
-  if(roomWrap) roomWrap.style.display = type==='OTHER' ? 'none' : '';
-  if(otherWrap) otherWrap.style.display = type==='OTHER' ? '' : 'none';
-}
-
+function dutyBulkForm(){  requirePerm('duty.manage');  openModal('📅 Generate Jadwal Mingguan', `    <div class="hint" style="margin-bottom:10px">Buat jadwal beberapa hari berturut-turut sekaligus (misal 1 minggu penuh) dengan petugas, jam, dan lokasi yang sama — tidak perlu input satu-satu tiap hari.</div>    <div class="form-grid">      <div><label>Jenis Petugas *</label><select id="db_ROLE_TYPE" onchange="onDutyBulkRoleTypeChange()">        <option value="CLEANING">🧹 Cleaning Service</option>        <option value="SATPAM">🛡️ Satpam</option>      </select></div>      <div><label>Petugas *</label><select id="db_USER_ID"><option value="">— Memuat —</option></select></div>      <div><label>Tanggal Mulai *</label><input id="db_START_DATE" type="date" value="${todayStr()}"></div>      <div><label>Jumlah Hari *</label><input id="db_DAYS" type="number" min="1" max="31" value="7"></div>      <div class="form-full" id="db_shift_wrap" style="display:none">        <label>Shift (khusus Satpam)</label>        <select id="db_SHIFT_PRESET" onchange="onDutyBulkShiftPresetChange()">          <option value="">— Pilih Shift atau isi jam manual —</option>          <option value="PAGI">Pagi (06:00–14:00)</option>          <option value="SIANG">Siang (14:00–22:00)</option>          <option value="MALAM">Malam (22:00–06:00)</option>        </select>      </div><div><label>Jam Mulai *</label><input id="db_SHIFT_START" type="time"></div>      <div><label>Jam Selesai *</label><input id="db_SHIFT_END" type="time"></div>      <div class="form-full" id="db_task_wrap">        <label>Jenis Tugas (khusus Cleaning Service)</label>        <select id="db_TASK_TYPE">          <option value="KEBERSIHAN">🧹 Kebersihan Ruangan</option>          <option value="KONTROL_ATK">📦 Kontrol ATK & Barang Habis Pakai</option>          <option value="KEDUANYA">🧹📦 Kebersihan + Kontrol ATK</option>        </select>      </div>      <div class="form-full">        <label>Jenis Lokasi</label>        <select id="db_LOCATION_TYPE" onchange="onDutyBulkLocationTypeChange()">          <option value="ALL_ROOMS">Semua Ruangan (Seluruh Gedung)</option>          <option value="ALL_ROOMS_BUILDING">Semua Ruangan di 1 Gedung</option>          <option value="ROOM">Ruangan Spesifik</option>          <option value="OTHER">Area Lain (bebas)</option>        </select>      </div>      <div class="form-full" id="db_room_wrap" style="display:none">        <label>Gedung</label>        <select id="db_BUILDING_SELECT" onchange="onDutyBulkBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select>        <label id="db_room_specific_label" style="margin-top:8px">Ruangan *</label>        <select id="db_ROOM_ID"><option value="">— Pilih Gedung dulu —</option></select></div>      <div class="form-full" id="db_other_wrap" style="display:none">        <label>Nama Lokasi *</label>        <input id="db_LOCATION_NAME" placeholder="Contoh: Pos Satpam Gerbang Utama, Area Parkir">      </div>      <div class="form-full"><label>Catatan</label><textarea id="db_NOTE"></textarea></div>    </div>  `,[    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,    `<button class="btn btn-primary" onclick="saveDutyBulk()">⚡ Generate Jadwal</button>`  ]);  setTimeout(function(){    onDutyBulkRoleTypeChange();    onDutyBulkLocationTypeChange();  },50);}
+function onDutyBulkRoleTypeChange(){  const type=getValue('db_ROLE_TYPE');  const select=document.getElementById('db_USER_ID');  if(select){    const staff=DB.USERS.filter(function(u){ const r=roleOf(u); return r && r.CODE===type; });    select.innerHTML=selectOptions(staff,'ID','NAME',null,true);  }  const shiftWrap=document.getElementById('db_shift_wrap');  if(shiftWrap) shiftWrap.style.display = type==='SATPAM' ? '' : 'none';  const taskWrap=document.getElementById('db_task_wrap');  if(taskWrap) taskWrap.style.display = type==='CLEANING' ? '' : 'none';}
+function onDutyBulkShiftPresetChange(){  const preset=getValue('db_SHIFT_PRESET');  const presets={PAGI:['06:00','14:00'],SIANG:['14:00','22:00'],MALAM:['22:00','06:00']};  if(presets[preset]){    document.getElementById('db_SHIFT_START').value=presets[preset][0];    document.getElementById('db_SHIFT_END').value=presets[preset][1];  }}
+function onDutyBulkLocationTypeChange(){  const type=getValue('db_LOCATION_TYPE');  const roomWrap=document.getElementById('db_room_wrap');  const otherWrap=document.getElementById('db_other_wrap');  const roomSelect=document.getElementById('db_ROOM_ID');  const roomLabel=document.getElementById('db_room_specific_label');  if(roomWrap) roomWrap.style.display = (type==='ROOM'||type==='ALL_ROOMS_BUILDING') ? '' : 'none';  if(otherWrap) otherWrap.style.display = type==='OTHER' ? '' : 'none';  if(roomSelect) roomSelect.style.display = type==='ROOM' ? '' : 'none';  if(roomLabel) roomLabel.style.display = type==='ROOM' ? '' : 'none';}
+function onDutyBulkBuildingChange(){  const buildingId=getValue('db_BUILDING_SELECT');  const roomSelect=document.getElementById('db_ROOM_ID');  if(!roomSelect)return;  const rooms=DB.ROOMS.filter(function(r){ return !buildingId||r.BUILDING_ID===buildingId; });  roomSelect.innerHTML = buildingId ? selectOptions(rooms,'ID','NAME',null,true) : '<option value="">— Pilih Gedung dulu —</option>';} 
+async function saveDutyBulk(){  try{    requirePerm('duty.manage');    const roleType=getValue('db_ROLE_TYPE');    const userId=getValue('db_USER_ID');    const startDate=getValue('db_START_DATE');    const days=Number(getValue('db_DAYS'))||0;    const shiftStart=getValue('db_SHIFT_START');    const shiftEnd=getValue('db_SHIFT_END');    const locationType=getValue('db_LOCATION_TYPE')||'ALL_ROOMS';    const taskType= roleType==='CLEANING' ? (getValue('db_TASK_TYPE')||'KEBERSIHAN') : '';    const note=getValue('db_NOTE');     if(!userId||!startDate||!shiftStart||!shiftEnd||days<1){      showToast('Petugas, tanggal mulai, jumlah hari, dan jam tugas wajib diisi.','warning');      return;    }    if(days>31){ showToast('Maksimal 31 hari sekali generate.','warning'); return; }     let location='', roomId='', buildingId='', locationName='';     if(locationType==='OTHER'){      locationName=getValue('db_LOCATION_NAME');      if(!locationName){ showToast('Nama lokasi wajib diisi.','warning'); return; }      location=locationName;    }else if(locationType==='ALL_ROOMS'){      location='Semua Ruangan (Seluruh Gedung)';    }else if(locationType==='ALL_ROOMS_BUILDING'){      buildingId=getValue('db_BUILDING_SELECT');      if(!buildingId){ showToast('Pilih gedung untuk cakupan seluruh ruangan.','warning'); return; }      location='Semua Ruangan - '+nameOf('BUILDINGS',buildingId);    }else{      roomId=getValue('db_ROOM_ID');      buildingId=getValue('db_BUILDING_SELECT');      if(!roomId){ showToast('Pilih ruangan tugas.','warning'); return; }      const room=DB.ROOMS.find(function(r){ return r.ID===roomId; });      location = room ? (room.NAME+' ('+nameOf('BUILDINGS',room.BUILDING_ID)+')') : '-';    }const user=DB.USERS.find(function(u){ return u.ID===userId; });    const startDateObj=new Date(startDate+'T00:00:00');    if(isNaN(startDateObj.getTime())){ showToast('Tanggal mulai tidak valid.','warning'); return; }     let created=0;    for(let i=0;i<days;i++){      const d=new Date(startDateObj);      d.setDate(d.getDate()+i);      const dateStr=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');       DB.DUTY_SCHEDULES.push({        ID:uid('DTY'),        ROLE_TYPE:roleType,        USER_ID:userId,        USER_NAME: user ? user.NAME : '-',        DATE:dateStr,        SHIFT_START:shiftStart,        SHIFT_END:shiftEnd,        TASK_TYPE:taskType,        LOCATION_TYPE:locationType,        ROOM_ID:roomId,        BUILDING_ID:buildingId,        LOCATION_NAME:locationName,        LOCATION:location,        NOTE:note,        CREATED_AT:nowStr()      });      created++;    }await audit('CREATE','DUTY_SCHEDULES','-','Generate '+created+' hari jadwal piket untuk '+(user?user.NAME:'-')+' di '+location);    await saveDB();    closeModal();    showToast(created+' hari jadwal piket berhasil dibuat sekaligus.','success');    renderDutySchedule();  }catch(error){    showToast(getErrorMessage(error),'error');  }} 
+function dutyForm(row){  requirePerm('duty.manage');  row=row||{};   openModal(row.ID?'Edit Jadwal Piket':'Tambah Jadwal Piket', `    <div class="form-grid">      <div><label>Jenis Petugas *</label><select id="d_ROLE_TYPE" onchange="onDutyRoleTypeChange()">        <option value="CLEANING" ${row.ROLE_TYPE==='CLEANING'?'selected':''}>🧹 Cleaning Service</option>        <option value="SATPAM" ${row.ROLE_TYPE==='SATPAM'?'selected':''}>🛡️ Satpam</option>      </select></div>      <div><label>Petugas *</label><select id="d_USER_ID"><option value="">— Memuat —</option></select></div>      <div><label>Tanggal *</label><input id="d_DATE" type="date" value="${row.DATE||todayStr()}"></div>      <div></div>      <div class="form-full" id="d_shift_wrap" style="display:none">        <label>Shift (khusus Satpam)</label>        <select id="d_SHIFT_PRESET" onchange="onDutyShiftPresetChange()">          <option value="">— Pilih Shift atau isi jam manual —</option>          <option value="PAGI">Pagi (06:00–14:00)</option>          <option value="SIANG">Siang (14:00–22:00)</option>          <option value="MALAM">Malam (22:00–06:00)</option>        </select>      </div><div><label>Jam Mulai *</label><input id="d_SHIFT_START" type="time" value="${row.SHIFT_START||''}"></div>      <div><label>Jam Selesai *</label><input id="d_SHIFT_END" type="time" value="${row.SHIFT_END||''}"></div>      <div class="form-full" id="d_task_wrap">        <label>Jenis Tugas (khusus Cleaning Service)</label>        <select id="d_TASK_TYPE">          <option value="KEBERSIHAN" ${(!row.TASK_TYPE||row.TASK_TYPE==='KEBERSIHAN')?'selected':''}>🧹 Kebersihan Ruangan</option>          <option value="KONTROL_ATK" ${row.TASK_TYPE==='KONTROL_ATK'?'selected':''}>📦 Kontrol ATK & Barang Habis Pakai</option>          <option value="KEDUANYA" ${row.TASK_TYPE==='KEDUANYA'?'selected':''}>🧹📦 Kebersihan + Kontrol ATK</option>        </select>      </div>      <div class="form-full">        <label>Jenis Lokasi</label>        <select id="d_LOCATION_TYPE" onchange="onDutyLocationTypeChange()">          <option value="ALL_ROOMS" ${row.LOCATION_TYPE==='ALL_ROOMS'?'selected':''}>Semua Ruangan (Seluruh Gedung)</option>          <option value="ALL_ROOMS_BUILDING" ${row.LOCATION_TYPE==='ALL_ROOMS_BUILDING'?'selected':''}>Semua Ruangan di 1 Gedung</option>          <option value="ROOM" ${(!row.LOCATION_TYPE||row.LOCATION_TYPE==='ROOM')?'selected':''}>Ruangan Spesifik</option>          <option value="OTHER" ${row.LOCATION_TYPE==='OTHER'?'selected':''}>Area Lain (bebas)</option>        </select>      </div><div class="form-full" id="d_all_rooms_hint" style="display:none"><div class="hint">Petugas ini bertanggung jawab atas <b>seluruh ruangan di seluruh gedung</b> pada jadwal ini.</div></div>      <div class="form-full" id="d_room_wrap">        <label>Gedung</label>        <select id="d_BUILDING_SELECT" onchange="onDutyBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select>        <label id="d_room_specific_label" style="margin-top:8px">Ruangan *</label>        <select id="d_ROOM_ID"><option value="">— Pilih Gedung dulu —</option></select>      </div>      <div class="form-full" id="d_other_wrap" style="display:none">        <label>Nama Lokasi *</label>        <input id="d_LOCATION_NAME" value="${escapeHtml(row.LOCATION_NAME||'')}" placeholder="Contoh: Pos Satpam Gerbang Utama, Area Parkir">      </div>      <div class="form-full"><label>Catatan</label><textarea id="d_NOTE">${escapeHtml(row.NOTE||'')}</textarea></div>    </div>  `,[    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,    `<button class="btn btn-primary" onclick="saveDuty('${row.ID||''}')">💾 Simpan</button>`  ]);   setTimeout(function(){    onDutyRoleTypeChange();    const userSelect=document.getElementById('d_USER_ID');    if(userSelect && row.USER_ID) userSelect.value=row.USER_ID;     onDutyLocationTypeChange();    if((row.LOCATION_TYPE==='ROOM'||row.LOCATION_TYPE==='ALL_ROOMS_BUILDING') && row.BUILDING_ID){      document.getElementById('d_BUILDING_SELECT').value=row.BUILDING_ID;      onDutyBuildingChange();      const roomSelect=document.getElementById('d_ROOM_ID');      if(roomSelect) roomSelect.value=row.ROOM_ID||'';    }  },50);}
+function onDutyRoleTypeChange(){  const type=getValue('d_ROLE_TYPE');  const select=document.getElementById('d_USER_ID');  if(select){    const staff=DB.USERS.filter(function(u){ const r=roleOf(u); return r && r.CODE===type; });    select.innerHTML=selectOptions(staff,'ID','NAME',null,true);  }  const shiftWrap=document.getElementById('d_shift_wrap');  if(shiftWrap) shiftWrap.style.display = type==='SATPAM' ? '' : 'none';  const taskWrap=document.getElementById('d_task_wrap');  if(taskWrap) taskWrap.style.display = type==='CLEANING' ? '' : 'none';}
+function onDutyShiftPresetChange(){  const preset=getValue('d_SHIFT_PRESET');  const presets={PAGI:['06:00','14:00'],SIANG:['14:00','22:00'],MALAM:['22:00','06:00']};  if(presets[preset]){    document.getElementById('d_SHIFT_START').value=presets[preset][0];    document.getElementById('d_SHIFT_END').value=presets[preset][1];  }}
+function onDutyLocationTypeChange(){  const type=getValue('d_LOCATION_TYPE');  const roomWrap=document.getElementById('d_room_wrap');  const otherWrap=document.getElementById('d_other_wrap');  const allRoomsHint=document.getElementById('d_all_rooms_hint');  const roomSelect=document.getElementById('d_ROOM_ID');  const roomLabel=document.getElementById('d_room_specific_label');   if(otherWrap) otherWrap.style.display = type==='OTHER' ? '' : 'none';  if(allRoomsHint) allRoomsHint.style.display = type==='ALL_ROOMS' ? '' : 'none';  if(roomWrap) roomWrap.style.display = (type==='ROOM'||type==='ALL_ROOMS_BUILDING') ? '' : 'none';  if(roomSelect) roomSelect.style.display = type==='ROOM' ? '' : 'none';  if(roomLabel) roomLabel.style.display = type==='ROOM' ? '' : 'none';}
 function onDutyBuildingChange(){
   const buildingId=getValue('d_BUILDING_SELECT');
   const roomSelect=document.getElementById('d_ROOM_ID');
@@ -5523,73 +5453,7 @@ function onDutyBuildingChange(){
   roomSelect.innerHTML = buildingId ? selectOptions(rooms,'ID','NAME',null,true) : '<option value="">— Pilih Gedung dulu —</option>';
 }
 
-async function saveDuty(id){
-  try{
-    requirePerm('duty.manage');
-    const roleType=getValue('d_ROLE_TYPE');
-    const userId=getValue('d_USER_ID');
-    const date=getValue('d_DATE');
-    const shiftStart=getValue('d_SHIFT_START');
-    const shiftEnd=getValue('d_SHIFT_END');
-    const locationType=getValue('d_LOCATION_TYPE')||'ROOM';
-    const note=getValue('d_NOTE');
-
-    if(!userId||!date||!shiftStart||!shiftEnd){ showToast('Petugas, tanggal, dan jam tugas wajib diisi.','warning'); return; }
-    if(shiftStart>=shiftEnd){ showToast('Jam selesai harus lebih besar dari jam mulai.','warning'); return; }
-
-    let location='', roomId='', buildingId='', locationName='';
-
-    if(locationType==='OTHER'){
-      locationName=getValue('d_LOCATION_NAME');
-      if(!locationName){ showToast('Nama lokasi wajib diisi.','warning'); return; }
-      location=locationName;
-    }else{
-      roomId=getValue('d_ROOM_ID');
-      buildingId=getValue('d_BUILDING_SELECT');
-      if(!roomId){ showToast('Pilih ruangan tugas.','warning'); return; }
-      const room=DB.ROOMS.find(function(r){ return r.ID===roomId; });
-      location = room ? (room.NAME+' ('+nameOf('BUILDINGS',room.BUILDING_ID)+')') : '-';
-    }
-
-    const user=DB.USERS.find(function(u){ return u.ID===userId; });
-    const existing = id ? DB.DUTY_SCHEDULES.find(function(x){ return x.ID===id; }) : null;
-
-    const data={
-      ID: id || uid('DTY'),
-      ROLE_TYPE:roleType,
-      USER_ID:userId,
-      USER_NAME: user ? user.NAME : '-',
-      DATE:date,
-      SHIFT_START:shiftStart,
-      SHIFT_END:shiftEnd,
-      LOCATION_TYPE:locationType,
-      ROOM_ID:roomId,
-      BUILDING_ID:buildingId,
-      LOCATION_NAME:locationName,
-      LOCATION:location,
-      NOTE:note,
-      CREATED_AT: existing ? existing.CREATED_AT : nowStr()
-    };
-
-    if(id){
-      const idx=DB.DUTY_SCHEDULES.findIndex(function(x){ return x.ID===id; });
-      if(idx<0){ showToast('Jadwal tidak ditemukan.','error'); return; }
-      DB.DUTY_SCHEDULES[idx]=data;
-      await audit('UPDATE','DUTY_SCHEDULES',id,'Update jadwal piket '+data.USER_NAME+' di '+location);
-    }else{
-      DB.DUTY_SCHEDULES.push(data);
-      await audit('CREATE','DUTY_SCHEDULES',data.ID,'Tambah jadwal piket '+data.USER_NAME+' di '+location);
-    }
-
-    await saveDB();
-    closeModal();
-    showToast('Jadwal piket berhasil disimpan.','success');
-    renderDutySchedule();
-  }catch(error){
-    showToast(getErrorMessage(error),'error');
-  }
-}
-
+async function saveDuty(id){  try{    requirePerm('duty.manage');    const roleType=getValue('d_ROLE_TYPE');    const userId=getValue('d_USER_ID');    const date=getValue('d_DATE');    const shiftStart=getValue('d_SHIFT_START');    const shiftEnd=getValue('d_SHIFT_END');    const locationType=getValue('d_LOCATION_TYPE')||'ROOM';    const taskType= roleType==='CLEANING' ? (getValue('d_TASK_TYPE')||'KEBERSIHAN') : '';    const note=getValue('d_NOTE');     if(!userId||!date||!shiftStart||!shiftEnd){ showToast('Petugas, tanggal, dan jam tugas wajib diisi.','warning'); return; }     let location='', roomId='', buildingId='', locationName='';     if(locationType==='OTHER'){      locationName=getValue('d_LOCATION_NAME');      if(!locationName){ showToast('Nama lokasi wajib diisi.','warning'); return; }      location=locationName;    }else if(locationType==='ALL_ROOMS'){      location='Semua Ruangan (Seluruh Gedung)';    }else if(locationType==='ALL_ROOMS_BUILDING'){      buildingId=getValue('d_BUILDING_SELECT');      if(!buildingId){ showToast('Pilih gedung untuk cakupan seluruh ruangan.','warning'); return; }      location='Semua Ruangan - '+nameOf('BUILDINGS',buildingId);    }else{      roomId=getValue('d_ROOM_ID');      buildingId=getValue('d_BUILDING_SELECT');      if(!roomId){ showToast('Pilih ruangan tugas.','warning'); return; }      const room=DB.ROOMS.find(function(r){ return r.ID===roomId; });      location = room ? (room.NAME+' ('+nameOf('BUILDINGS',room.BUILDING_ID)+')') : '-';    }const user=DB.USERS.find(function(u){ return u.ID===userId; });    const existing = id ? DB.DUTY_SCHEDULES.find(function(x){ return x.ID===id; }) : null;     const data={      ID: id || uid('DTY'),      ROLE_TYPE:roleType,      USER_ID:userId,      USER_NAME: user ? user.NAME : '-',      DATE:date,      SHIFT_START:shiftStart,      SHIFT_END:shiftEnd,      TASK_TYPE:taskType,      LOCATION_TYPE:locationType,      ROOM_ID:roomId,      BUILDING_ID:buildingId,      LOCATION_NAME:locationName,      LOCATION:location,      NOTE:note,      CREATED_AT: existing ? existing.CREATED_AT : nowStr()    };     if(id){      const idx=DB.DUTY_SCHEDULES.findIndex(function(x){ return x.ID===id; });      if(idx<0){ showToast('Jadwal tidak ditemukan.','error'); return; }      DB.DUTY_SCHEDULES[idx]=data;      await audit('UPDATE','DUTY_SCHEDULES',id,'Update jadwal piket '+data.USER_NAME+' di '+location);    }else{      DB.DUTY_SCHEDULES.push(data);      await audit('CREATE','DUTY_SCHEDULES',data.ID,'Tambah jadwal piket '+data.USER_NAME+' di '+location);    }     await saveDB();    closeModal();    showToast('Jadwal piket berhasil disimpan.','success');    renderDutySchedule();  }catch(error){    showToast(getErrorMessage(error),'error');  }}
 async function dutyDelete(id){
   try{
     requirePerm('duty.manage');
