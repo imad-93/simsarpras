@@ -807,6 +807,7 @@ const DEFAULT_ROLES = [
 ];
 const MENUS = [
   {group:'',code:'dashboard',name:'Dashboard',icon:'📊',route:'dashboard',perm:'dashboard.view'},
+  {group:'',code:'my-vehicles',name:'Kendaraan Saya',icon:'🚘',route:'my-vehicles',perm:'dashboard.view'},
   {group:'Inventaris',code:'assets',name:'Semua Aset',icon:'📦',route:'assets',perm:'asset.view'},
   {group:'Inventaris',code:'asset-units',name:'Unit Inventaris',icon:'🏷️',route:'asset-units',perm:'asset_unit.view'},
   {group:'Sarpras',code:'reports',name:'Laporan Kerusakan',icon:'⚠️',route:'reports',perm:'report.view',setting:'ENABLE_REPORT'},
@@ -956,7 +957,7 @@ async function buildDefaultDB(){
     ROLES:[], USERS:[], UNITS:[], BUILDINGS:[], ROOMS:[],
     ASSET_CATEGORIES:[], ASSET_CONDITIONS:[], ASSETS:[], ASSET_UNITS:[],
     BOOKINGS:[], REPORT_CATEGORIES:[], REPORTS:[],
-    MAINTENANCE_TYPES:[], MAINTENANCE:[], STOCK_TAKEOUTS:[], FINANCE:[], DUTY_SCHEDULES:[], VEHICLE_LOGS:[], DUTY_LOGS:[],
+    MAINTENANCE_TYPES:[], MAINTENANCE:[], STOCK_TAKEOUTS:[], FINANCE:[], DUTY_SCHEDULES:[], VEHICLE_LOGS:[], DUTY_LOGS:[], USER_VEHICLES:[],
       APP_NAME:'SIM-SARPRAS',
       APP_DESCRIPTION:'Sistem Informasi Manajemen Sarana dan Prasarana',
       APP_VERSION:'1.0.0',
@@ -1105,6 +1106,7 @@ function migrateDB(){
   if(!Array.isArray(DB.DUTY_SCHEDULES))DB.DUTY_SCHEDULES=[];
   if(!Array.isArray(DB.VEHICLE_LOGS))DB.VEHICLE_LOGS=[];
   if(!Array.isArray(DB.DUTY_LOGS))DB.DUTY_LOGS=[];
+  if(!Array.isArray(DB.USER_VEHICLES))DB.USER_VEHICLES=[];
   if(!DB.SEQ)DB.SEQ={};
   if(DB.SEQ.STOCK_TAKEOUTS===undefined)DB.SEQ.STOCK_TAKEOUTS=0;
   if(!DB.APP_SETTINGS)DB.APP_SETTINGS={};
@@ -1756,6 +1758,7 @@ function navigate(route){
 
   const routers = {
     'dashboard':renderDashboard,
+    'my-vehicles':renderMyVehicles,
     'assets':renderAssets,
     'asset-units':renderAssetUnits,
     'reports':renderReports,
@@ -1789,6 +1792,7 @@ function navigate(route){
 
 const ROUTE_SUBTITLES = {
   'dashboard':'Ringkasan sistem sarana & prasarana',
+  'my-vehicles':'Daftarkan kendaraan Anda untuk mempercepat pencatatan keluar-masuk',
   'assets':'Master data aset',
   'asset-units':'Identitas fisik per unit barang',
   'reports':'Laporan kerusakan & kebutuhan sarpras',
@@ -5397,15 +5401,220 @@ async function maintStatus(id,status){
     renderMaintenanceTable();
   }catch(error){ showToast(getErrorMessage(error),'error'); }
 }
+/* =========================================================
+   KENDARAAN SAYA (registrasi mandiri, semua role)
+========================================================= */
+function renderMyVehicles(){
+  try{
+    const content=document.getElementById('content');
+    content.innerHTML=`
+      <div class="page-title">🚘 Kendaraan Saya</div>
+      <div class="page-subtitle">Daftarkan nomor polisi kendaraan Anda supaya Satpam bisa mencatat keluar-masuk kendaraan cukup dengan scan QR, tanpa perlu isi data manual tiap kali.</div>
+      <div class="card">
+        <div class="toolbar"><div></div><div class="toolbar-right"><button class="btn btn-primary" onclick="myVehicleForm()">+ Daftarkan Kendaraan</button></div></div>
+        <div id="myVehiclesTable"></div>
+      </div>
+    `;
+    renderMyVehiclesTable();
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
+}
+
+function renderMyVehiclesTable(){
+  const rows=(DB.USER_VEHICLES||[]).filter(function(v){ return v.USER_ID===STATE.currentUser.ID; });
+  document.getElementById('myVehiclesTable').innerHTML=renderTableHtml(rows,
+    [['PLATE_NUMBER','Nomor Polisi'],['VEHICLE_TYPE','Jenis']],
+    function(row){
+      return `<button class="btn btn-light btn-sm" onclick="showMyVehicleQr('${row.ID}')">🔳 QR</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteMyVehicle('${row.ID}')">🗑️</button>`;
+    });
+}
+
+function myVehicleForm(){
+  openModal('+ Daftarkan Kendaraan', `
+    <div class="form-grid">
+      <div><label>Nomor Polisi *</label><input id="mv_PLATE" placeholder="Contoh: P 1234 AB" style="text-transform:uppercase"></div>
+      <div><label>Jenis Kendaraan</label><select id="mv_TYPE">
+        <option value="MOTOR">Motor</option>
+        <option value="MOBIL">Mobil</option>
+        <option value="LAINNYA">Lainnya</option>
+      </select></div>
+    </div>
+  `,[
+    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
+    `<button class="btn btn-primary" onclick="saveMyVehicle()">💾 Simpan</button>`
+  ]);
+}
+
+async function saveMyVehicle(){
+  try{
+    const plate=(getValue('mv_PLATE')||'').trim().toUpperCase();
+    const type=getValue('mv_TYPE');
+    if(!plate){ showToast('Nomor polisi wajib diisi.','warning'); return; }
+
+    const dup=(DB.USER_VEHICLES||[]).some(function(v){ return v.PLATE_NUMBER===plate; });
+    if(dup){ showToast('Nomor polisi ini sudah terdaftar di sistem.','warning'); return; }
+
+    const data={
+      ID:uid('VEH'),
+      USER_ID:STATE.currentUser.ID,
+      USER_NAME:STATE.currentUser.NAME,
+      PLATE_NUMBER:plate,
+      VEHICLE_TYPE:type,
+      CREATED_AT:nowStr()
+    };
+    DB.USER_VEHICLES.push(data);
+    await audit('CREATE','USER_VEHICLES',data.ID,'Daftarkan kendaraan '+plate);
+    await saveDB();
+    closeModal();
+    showToast('Kendaraan berhasil didaftarkan.','success');
+    renderMyVehicles();
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
+}
+
+function showMyVehicleQr(vehicleId){
+  const vehicle=(DB.USER_VEHICLES||[]).find(function(v){ return v.ID===vehicleId; });
+  if(!vehicle){ showToast('Kendaraan tidak ditemukan.','error'); return; }
+  openModal('🔳 QR Kendaraan', `
+    <div style="text-align:center">
+      <div id="myVehicleQrTarget" style="display:inline-block;padding:16px;background:#fff;border:1px solid var(--border);border-radius:12px"></div>
+      <div style="margin-top:14px;font-weight:800;font-size:14px">${escapeHtml(vehicle.PLATE_NUMBER)}</div>
+      <div style="color:var(--muted);font-size:12px;margin-top:2px">${escapeHtml(vehicle.USER_NAME)}</div>
+    </div>
+    <div class="hint" style="margin-top:10px">Tunjukkan QR ini ke Satpam saat masuk/keluar area kampus (simpan di HP, tidak wajib dicetak). Sekali scan otomatis tercatat MASUK, scan lagi otomatis tercatat KELUAR.</div>
+  `, [
+    `<button class="btn btn-light" onclick="closeModal()">Tutup</button>`,
+    `<button class="btn btn-primary" onclick="downloadMyVehicleQr('${vehicle.ID}')">⬇️ Download PNG</button>`
+  ]);
+  setTimeout(function(){
+    const target=document.getElementById('myVehicleQrTarget');
+    if(!target)return;
+    target.innerHTML='';
+    if(typeof QRCode==='undefined'){
+      target.innerHTML='<div style="color:var(--danger);font-size:12px">Pustaka QR gagal dimuat.</div>';
+      return;
+    }
+    new QRCode(target,{text:vehicle.ID,width:190,height:190,correctLevel:QRCode.CorrectLevel.M});
+  },50);
+}
+function downloadMyVehicleQr(vehicleId){
+  const canvas=document.querySelector('#myVehicleQrTarget canvas');
+  if(!canvas){ showToast('QR belum siap, coba lagi.','warning'); return; }
+  const vehicle=(DB.USER_VEHICLES||[]).find(function(v){ return v.ID===vehicleId; });
+  const link=document.createElement('a');
+  link.download='QR-Kendaraan-'+(vehicle?vehicle.PLATE_NUMBER.replace(/\s+/g,''):vehicleId)+'.png';
+  link.href=canvas.toDataURL('image/png');
+  link.click();
+}
+async function deleteMyVehicle(id){
+  try{
+    const vehicle=(DB.USER_VEHICLES||[]).find(function(v){ return v.ID===id; });
+    if(!vehicle || vehicle.USER_ID!==STATE.currentUser.ID){ showToast('Kendaraan tidak ditemukan.','error'); return; }
+    if(!confirm('Hapus kendaraan "'+vehicle.PLATE_NUMBER+'" dari daftar Anda?')) return;
+    DB.USER_VEHICLES=(DB.USER_VEHICLES||[]).filter(function(v){ return v.ID!==id; });
+    await audit('DELETE','USER_VEHICLES',id,'Hapus kendaraan terdaftar '+vehicle.PLATE_NUMBER);
+    await saveDB();
+    showToast('Kendaraan dihapus.','success');
+    renderMyVehicles();
+  }catch(error){ showToast(getErrorMessage(error),'error'); }
+}
+
 /* ========================================================= 
 BUKU TAMU KENDARAAN (khusus Satpam)
 ========================================================= */
-  function renderVehicleLog(){  try{    requirePerm('vehicle.manage');    const content=document.getElementById('content');    const today=todayStr();    const todayLogs=(DB.VEHICLE_LOGS||[]).filter(function(v){ return v.DATE===today; });    const stillInside=todayLogs.filter(function(v){ return v.STATUS==='DI_DALAM'; }).length;     content.innerHTML=`      <div class="page-title">🚗 Buku Tamu Kendaraan</div>      <div class="page-subtitle">Catatan keamanan kendaraan masuk dan keluar area kampus.</div>      <div class="stats">        ${stat('Kendaraan Masuk Hari Ini',todayLogs.length,'🚙','#EEF0FF','#4338CA')}        ${stat('Sedang di Dalam',stillInside,'🅿️','#FFFBEB','#B45309')}      </div> <div class="card">        <div class="toolbar">          <div class="toolbar-left">            <input id="vlSearch" class="search-box" placeholder="🔎 Cari nopol/nama..." oninput="renderVehicleLogTable()">            <input id="vlDateFilter" type="date" value="${today}" onchange="renderVehicleLogTable()">          </div>          <div class="toolbar-right">            <button class="btn btn-primary" onclick="vehicleLogForm()">+ Catat Kendaraan Masuk</button>          </div>        </div>        <div id="vehicleLogTable"></div>      </div>    `;    renderVehicleLogTable();  }catch(error){    showToast(getErrorMessage(error),'error');  }}
-  function renderVehicleLogTable(){  const keyword=(document.getElementById('vlSearch')?.value||'').toLowerCase();  const dateFilter=document.getElementById('vlDateFilter')?.value||'';   let rows=(DB.VEHICLE_LOGS||[]).slice();  if(dateFilter) rows=rows.filter(function(r){ return r.DATE===dateFilter; });  if(keyword) rows=rows.filter(function(r){ return Object.values(r).join(' ').toLowerCase().includes(keyword); });   rows.sort(function(a,b){ return (b.TIME_IN||'').localeCompare(a.TIME_IN||''); });   document.getElementById('vehicleLogTable').innerHTML=renderTableHtml(rows,    [['PLATE_NUMBER','Nopol'],['DRIVER_NAME','Nama Pengendara'],['DOCUMENT_TYPE','Dokumen'],['DOCUMENT_NUMBER','No. Dokumen'],['PURPOSE','Keperluan'],['TIME_IN','Jam Masuk'],['TIME_OUT','Jam Keluar'],['STATUS','Status'],['RECORDED_BY','Dicatat Oleh']],    function(row){      let html=`<button class="btn btn-light btn-sm" onclick='vehicleLogDetail(${safeJson(row)})'>🔍</button>`;      if(row.STATUS==='DI_DALAM'){        html+=`<button class="btn btn-success btn-sm" onclick="vehicleCheckout('${row.ID}')">🚪 Catat Keluar</button>`;      }      return html;    });}
-  function vehicleLogForm(){  requirePerm('vehicle.manage');  const now=new Date();  const pad=function(n){ return String(n).padStart(2,'0'); };  const timeNow=pad(now.getHours())+':'+pad(now.getMinutes());   openModal('🚗 Catat Kendaraan Masuk', `    <div class="form-grid">      <div><label>Nomor Polisi *</label><input id="vl_PLATE_NUMBER" placeholder="Contoh: P 1234 AB" style="text-transform:uppercase"></div>      <div><label>Jenis Kendaraan</label><select id="vl_VEHICLE_TYPE">        <option value="MOTOR">Motor</option>        <option value="MOBIL">Mobil</option>        <option value="LAINNYA">Lainnya</option>      </select></div>      <div class="form-full"><label>Nama Pengendara *</label><input id="vl_DRIVER_NAME"></div>      <div><label>Jenis Dokumen *</label><select id="vl_DOCUMENT_TYPE">        <option value="STNK">STNK</option>        <option value="KTP">KTP</option>        <option value="KTM">KTM</option>      </select></div>      <div><label>No. Dokumen *</label><input id="vl_DOCUMENT_NUMBER" placeholder="Sesuai dokumen yang ditunjukkan"></div>      <div class="form-full"><label>Tujuan/Keperluan *</label><input id="vl_PURPOSE" placeholder="Contoh: Tamu rapat di Gedung A, Antar barang"></div>      <div><label>Tanggal</label><input id="vl_DATE" type="date" value="${todayStr()}"></div>      <div><label>Jam Masuk</label><input id="vl_TIME_IN" type="time" value="${timeNow}"></div>      <div class="form-full"><label>Catatan</label><textarea id="vl_NOTE"></textarea></div>    </div>    <div class="hint" style="margin-top:6px">Kombinasi Nomor Polisi + Nomor Dokumen (STNK/KTP/KTM) dipakai sebagai verifikasi identitas kendaraan & pengendara yang masuk area kampus.</div>  `,[    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,    `<button class="btn btn-primary" onclick="saveVehicleLog()">💾 Simpan</button>`  ]);} 
-  async function saveVehicleLog(){  try{    requirePerm('vehicle.manage');    const plate=(getValue('vl_PLATE_NUMBER')||'').trim().toUpperCase();    const vehicleType=getValue('vl_VEHICLE_TYPE');    const driverName=getValue('vl_DRIVER_NAME');    const docType=getValue('vl_DOCUMENT_TYPE');    const docNumber=getValue('vl_DOCUMENT_NUMBER');    const purpose=getValue('vl_PURPOSE');    const date=getValue('vl_DATE')||todayStr();    const timeIn=getValue('vl_TIME_IN');    const note=getValue('vl_NOTE');     if(!plate||!driverName||!docNumber||!purpose){      showToast('Nomor polisi, nama pengendara, nomor dokumen, dan keperluan wajib diisi.','warning');      return;    }     const data={      ID:uid('VLG'),      PLATE_NUMBER:plate,      VEHICLE_TYPE:vehicleType,      DRIVER_NAME:driverName,      DOCUMENT_TYPE:docType,      DOCUMENT_NUMBER:docNumber,      PURPOSE:purpose,      DATE:date,      TIME_IN:timeIn,      TIME_OUT:'',      STATUS:'DI_DALAM',      NOTE:note,      RECORDED_BY:STATE.currentUser.NAME,      CREATED_AT:nowStr()    };DB.VEHICLE_LOGS.push(data);    await audit('CREATE','VEHICLE_LOGS',data.ID,'Catat kendaraan masuk: '+plate+' ('+driverName+')');    await saveDB();    closeModal();    showToast('Kendaraan masuk berhasil dicatat.','success');    renderVehicleLog();  }catch(error){    showToast(getErrorMessage(error),'error');  }}
+  function renderVehicleLog(){  try{    requirePerm('vehicle.manage');    const content=document.getElementById('content');    const today=todayStr();    const todayLogs=(DB.VEHICLE_LOGS||[]).filter(function(v){ return v.DATE===today; });    const stillInside=todayLogs.filter(function(v){ return v.STATUS==='DI_DALAM'; }).length;     content.innerHTML=`      <div class="page-title">🚗 Buku Tamu Kendaraan</div>      <div class="page-subtitle">Catatan keamanan kendaraan masuk dan keluar area kampus.</div>      <div class="stats">        ${stat('Kendaraan Masuk Hari Ini',todayLogs.length,'🚙','#EEF0FF','#4338CA')}        ${stat('Sedang di Dalam',stillInside,'🅿️','#FFFBEB','#B45309')}      </div> <div class="card">        <div class="toolbar">          <div class="toolbar-left">            <input id="vlSearch" class="search-box" placeholder="🔎 Cari nopol/nama..." oninput="renderVehicleLogTable()">            <input id="vlDateFilter" type="date" value="${today}" onchange="renderVehicleLogTable()">          </div>          <div class="toolbar-right">          <div class="toolbar-right">
+            <button class="btn btn-primary" onclick="scanRegisteredVehicle()">📷 Scan Kendaraan Terdaftar</button>
+            <button class="btn btn-light" onclick="vehicleLogForm()">+ Catat Kendaraan Tamu/Manual</button>
+          </div>        </div>        <div id="vehicleLogTable"></div>      </div>    `;    renderVehicleLogTable();  }catch(error){    showToast(getErrorMessage(error),'error');  }}
+  function renderVehicleLogTable(){  
+    const keyword=(document.getElementById('vlSearch')?.value||'').toLowerCase();  
+    const dateFilter=document.getElementById('vlDateFilter')?.value||'';   
+    let rows=(DB.VEHICLE_LOGS||[]).slice();  if(dateFilter) rows=rows.filter(function(r){ return r.DATE===dateFilter; });  
+    if(keyword) rows=rows.filter(function(r){ return Object.values(r).join(' ').toLowerCase().includes(keyword); });   
+    rows.sort(function(a,b){ return (b.TIME_IN||'').localeCompare(a.TIME_IN||''); });                                   const displayRows=rows.map(function(r){
+    return Object.assign({},r,{SOURCE_LABEL: r.VEHICLE_REF_ID ? '🏫 Warga Kampus' : '🎫 Tamu/Manual'});
+  });
+
+  document.getElementById('vehicleLogTable').innerHTML=renderTableHtml(displayRows,
+    [['SOURCE_LABEL','Sumber'],['PLATE_NUMBER','Nopol'],['DRIVER_NAME','Nama Pengendara'],['DOCUMENT_TYPE','Dokumen'],['PURPOSE','Keperluan'],['TIME_IN','Jam Masuk'],['TIME_OUT','Jam Keluar'],['STATUS','Status'],['RECORDED_BY','Dicatat Oleh']],    function(row){      let html=`<button class="btn btn-light btn-sm" onclick='vehicleLogDetail(${safeJson(row)})'>🔍</button>`;      if(row.STATUS==='DI_DALAM'){        html+=`<button class="btn btn-success btn-sm" onclick="vehicleCheckout('${row.ID}')">🚪 Catat Keluar</button>`;      }      return html;    });}
+  function vehicleLogForm(){  requirePerm('vehicle.manage');  const now=new Date();  const pad=function(n){ return String(n).padStart(2,'0'); };  const timeNow=pad(now.getHours())+':'+pad(now.getMinutes());  openModal('🚗 Catat Kendaraan Tamu / Manual', `    <div class="form-grid">      <div><label>Nomor Polisi *</label><input id="vl_PLATE_NUMBER" placeholder="Contoh: P 1234 AB" style="text-transform:uppercase"></div>      <div><label>Jenis Kendaraan</label><select id="vl_VEHICLE_TYPE">        <option value="MOTOR">Motor</option>        <option value="MOBIL">Mobil</option>        <option value="LAINNYA">Lainnya</option>      </select></div>      <div class="form-full"><label>Nama Pengendara *</label><input id="vl_DRIVER_NAME"></div>      <div><label>Jenis Dokumen *</label><select id="vl_DOCUMENT_TYPE">        <option value="STNK">STNK</option>        <option value="KTP">KTP</option>        <option value="KTM">KTM</option>      </select></div>      <div><label>No. Dokumen *</label><input id="vl_DOCUMENT_NUMBER" placeholder="Sesuai dokumen yang ditunjukkan"></div>      <div class="form-full"><label>Tujuan/Keperluan *</label><input id="vl_PURPOSE" placeholder="Contoh: Tamu rapat di Gedung A, Antar barang"></div>      <div><label>Tanggal</label><input id="vl_DATE" type="date" value="${todayStr()}"></div>      <div><label>Jam Masuk</label><input id="vl_TIME_IN" type="time" value="${timeNow}"></div>      <div class="form-full"><label>Catatan</label><textarea id="vl_NOTE"></textarea></div>    </div>    <div class="hint" style="margin-top:6px">Gunakan form ini untuk <b>tamu/pengunjung yang bukan pengguna sistem</b> (bukan mahasiswa/dosen/staf/dll). Kombinasi Nomor Polisi + Nomor Dokumen (STNK/KTP/KTM) dipakai sebagai verifikasi identitas. Untuk warga kampus yang sudah punya akun, arahkan mereka mendaftar di menu "Kendaraan Saya" lalu gunakan tombol "📷 Scan Kendaraan Terdaftar".</div>  `,[    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,    `<button class="btn btn-primary" onclick="saveVehicleLog()">💾 Simpan</button>`  ]);} 
+  function scanRegisteredVehicle(){
+  openQrScanner(async function(code){
+    showLoading('Memproses scan...');
+    const device=getDeviceInfo();
+    const geo=await getCurrentLocation();
+    hideLoading();
+    await processRegisteredVehicleScan(code, device, geo);
+  });
+}
+
+async function processRegisteredVehicleScan(vehicleId, device, geo){
+  try{
+    requirePerm('vehicle.manage');
+    const vehicle=(DB.USER_VEHICLES||[]).find(function(v){ return v.ID===vehicleId; });
+    if(!vehicle){
+      showToast('QR ini bukan kendaraan terdaftar. Gunakan "Catat Kendaraan Tamu/Manual" untuk pengunjung dari luar.','warning');
+      return;
+    }
+
+    const mapsLink=mapsLinkFromGeo(geo);
+    const openLog=(DB.VEHICLE_LOGS||[]).find(function(l){ return l.VEHICLE_REF_ID===vehicleId && l.STATUS==='DI_DALAM'; });
+    const now=new Date();
+    const pad=function(n){ return String(n).padStart(2,'0'); };
+    const timeNow=pad(now.getHours())+':'+pad(now.getMinutes());
+
+    if(openLog){
+      openLog.TIME_OUT=timeNow;
+      openLog.STATUS='SUDAH_KELUAR';
+      openLog.OUT_DEVICE_INFO=device;
+      openLog.OUT_GPS_MAP_LINK=mapsLink;
+      await audit('UPDATE','VEHICLE_LOGS',openLog.ID,'Scan keluar kendaraan terdaftar: '+vehicle.PLATE_NUMBER);
+      await saveDB();
+      showToast('Kendaraan '+vehicle.PLATE_NUMBER+' ('+vehicle.USER_NAME+') tercatat KELUAR jam '+timeNow+'.','success');
+    }else{
+      const data={
+        ID:uid('VLG'),
+        VEHICLE_REF_ID:vehicleId,
+        PLATE_NUMBER:vehicle.PLATE_NUMBER,
+        VEHICLE_TYPE:vehicle.VEHICLE_TYPE,
+        DRIVER_NAME:vehicle.USER_NAME,
+        DOCUMENT_TYPE:'TERDAFTAR',
+        DOCUMENT_NUMBER:'-',
+        PURPOSE:'Warga Kampus (Terdaftar)',
+        DATE:todayStr(),
+        TIME_IN:timeNow,
+        TIME_OUT:'',
+        STATUS:'DI_DALAM',
+        NOTE:'',
+        RECORDED_BY:STATE.currentUser.NAME,
+        IN_DEVICE_INFO:device,
+        IN_GPS_MAP_LINK:mapsLink,
+        CREATED_AT:nowStr()
+      };
+      DB.VEHICLE_LOGS.push(data);
+      await audit('CREATE','VEHICLE_LOGS',data.ID,'Scan masuk kendaraan terdaftar: '+vehicle.PLATE_NUMBER);
+      await saveDB();
+      showToast('Kendaraan '+vehicle.PLATE_NUMBER+' ('+vehicle.USER_NAME+') tercatat MASUK jam '+timeNow+'.','success');
+    }
+
+    renderVehicleLogTable();
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
+}
+async function saveVehicleLog(){  try{    requirePerm('vehicle.manage');    const plate=(getValue('vl_PLATE_NUMBER')||'').trim().toUpperCase();    const vehicleType=getValue('vl_VEHICLE_TYPE');    const driverName=getValue('vl_DRIVER_NAME');    const docType=getValue('vl_DOCUMENT_TYPE');    const docNumber=getValue('vl_DOCUMENT_NUMBER');    const purpose=getValue('vl_PURPOSE');    const date=getValue('vl_DATE')||todayStr();    const timeIn=getValue('vl_TIME_IN');    const note=getValue('vl_NOTE');     if(!plate||!driverName||!docNumber||!purpose){      showToast('Nomor polisi, nama pengendara, nomor dokumen, dan keperluan wajib diisi.','warning');      return;    }     const data={      ID:uid('VLG'),      PLATE_NUMBER:plate,      VEHICLE_TYPE:vehicleType,      DRIVER_NAME:driverName,      DOCUMENT_TYPE:docType,      DOCUMENT_NUMBER:docNumber,      PURPOSE:purpose,      DATE:date,      TIME_IN:timeIn,      TIME_OUT:'',      STATUS:'DI_DALAM',      NOTE:note,      RECORDED_BY:STATE.currentUser.NAME,      CREATED_AT:nowStr()    };DB.VEHICLE_LOGS.push(data);    await audit('CREATE','VEHICLE_LOGS',data.ID,'Catat kendaraan masuk: '+plate+' ('+driverName+')');    await saveDB();    closeModal();    showToast('Kendaraan masuk berhasil dicatat.','success');    renderVehicleLog();  }catch(error){    showToast(getErrorMessage(error),'error');  }}
   async function vehicleCheckout(id){  try{    requirePerm('vehicle.manage');    const row=DB.VEHICLE_LOGS.find(function(v){ return v.ID===id; });    if(!row){ showToast('Data tidak ditemukan.','error'); return; }    if(row.STATUS!=='DI_DALAM'){ showToast('Kendaraan ini sudah tercatat keluar.','warning'); return; }    const now=new Date();    const pad=function(n){ return String(n).padStart(2,'0'); };    row.TIME_OUT=pad(now.getHours())+':'+pad(now.getMinutes());    row.STATUS='SUDAH_KELUAR';    await audit('UPDATE','VEHICLE_LOGS',id,'Catat kendaraan keluar: '+row.PLATE_NUMBER);    await saveDB();    showToast('Kendaraan keluar berhasil dicatat.','success');    renderVehicleLogTable();  }catch(error){ showToast(getErrorMessage(error),'error'); }}
-  function vehicleLogDetail(row){  openModal('Detail Kendaraan', `    <div class="kv"><span>Nomor Polisi</span><b>${escapeHtml(row.PLATE_NUMBER)}</b></div>    <div class="kv"><span>Jenis Kendaraan</span><b>${escapeHtml(row.VEHICLE_TYPE||'-')}</b></div>    <div class="kv"><span>Nama Pengendara</span><b>${escapeHtml(row.DRIVER_NAME)}</b></div>    <div class="kv"><span>Dokumen</span><b>${escapeHtml(row.DOCUMENT_TYPE)} — ${escapeHtml(row.DOCUMENT_NUMBER)}</b></div>    <div class="kv"><span>Keperluan</span><b>${escapeHtml(row.PURPOSE)}</b></div>    <div class="kv"><span>Tanggal</span><b>${escapeHtml(row.DATE)}</b></div>    <div class="kv"><span>Jam Masuk</span><b>${escapeHtml(row.TIME_IN||'-')}</b></div>    <div class="kv"><span>Jam Keluar</span><b>${escapeHtml(row.TIME_OUT||'Masih di dalam')}</b></div>    <div class="kv"><span>Status</span>${statusBadge(row.STATUS)}</div>    <div class="kv"><span>Dicatat Oleh</span><b>${escapeHtml(row.RECORDED_BY||'-')}</b></div>    ${row.NOTE?`<div class="kv"><span>Catatan</span><b>${escapeHtml(row.NOTE)}</b></div>`:''}  `,[`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);}
+  function vehicleLogDetail(row){  openModal('Detail Kendaraan', `    <div class="kv"><span>Nomor Polisi</span><b>${escapeHtml(row.PLATE_NUMBER)}</b></div>    <div class="kv"><span>Jenis Kendaraan</span><b>${escapeHtml(row.VEHICLE_TYPE||'-')}</b></div>    <div class="kv"><span>Nama Pengendara</span><b>${escapeHtml(row.DRIVER_NAME)}</b></div>    <div class="kv"><span>Dokumen</span><b>${escapeHtml(row.DOCUMENT_TYPE)} — ${escapeHtml(row.DOCUMENT_NUMBER)}</b></div>    <div class="kv"><span>Keperluan</span><b>${escapeHtml(row.PURPOSE)}</b></div>    <div class="kv"><span>Tanggal</span><b>${escapeHtml(row.DATE)}</b></div>    <div class="kv"><span>Jam Masuk</span><b>${escapeHtml(row.TIME_IN||'-')}</b></div>    <div class="kv"><span>Jam Keluar</span><b>${escapeHtml(row.TIME_OUT||'Masih di dalam')}</b></div>    <div class="kv"><span>Status</span>${statusBadge(row.STATUS)}</div>
+    <div class="kv"><span>Dicatat Oleh</span><b>${escapeHtml(row.RECORDED_BY||'-')}</b></div>
+    ${row.IN_DEVICE_INFO?`<div class="kv"><span>Perangkat (Scan Masuk)</span><b>${escapeHtml(row.IN_DEVICE_INFO)}</b></div>`:''}
+    ${row.IN_GPS_MAP_LINK?`<div class="kv"><span>Lokasi GPS (Scan Masuk)</span><b><a href="${row.IN_GPS_MAP_LINK}" target="_blank">📍 Lihat di Peta</a></b></div>`:''}
+    ${row.OUT_DEVICE_INFO?`<div class="kv"><span>Perangkat (Scan Keluar)</span><b>${escapeHtml(row.OUT_DEVICE_INFO)}</b></div>`:''}
+    ${row.OUT_GPS_MAP_LINK?`<div class="kv"><span>Lokasi GPS (Scan Keluar)</span><b><a href="${row.OUT_GPS_MAP_LINK}" target="_blank">📍 Lihat di Peta</a></b></div>`:''}
+    ${row.NOTE?`<div class="kv"><span>Catatan</span><b>${escapeHtml(row.NOTE)}</b></div>`:''}
+  `,[`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);}
   
 /* =========================================================
    JADWAL PIKET — CLEANING SERVICE & SATPAM
@@ -5688,9 +5897,15 @@ function renderDutyLogTable(){
 }
 
 function scanDutyCheckpoint(){
-  openQrScanner(function(code){
+  openQrScanner(async function(code){
+    showLoading('Mendapatkan lokasi...');
+    const device=getDeviceInfo();
+    const geo=await getCurrentLocation();
+    hideLoading();
+    const scanMeta={device:device, geo:geo};
+
     if(String(code).indexOf('BLD-')===0){
-      handleBuildingScan(code);
+      handleBuildingScan(code, scanMeta);
       return;
     }
     const room=DB.ROOMS.find(function(r){ return r.ID===code; });
@@ -5698,11 +5913,11 @@ function scanDutyCheckpoint(){
       showToast('QR ini bukan QR ruangan/gedung yang terdaftar.','warning');
       return;
     }
-    handleRoomScan(room);
+    handleRoomScan(room, scanMeta);
   });
 }
 
-function handleRoomScan(room){
+function handleRoomScan(room, scanMeta){
   const today=todayStr();
   const matched=(DB.DUTY_SCHEDULES||[]).find(function(s){
     if(s.USER_ID!==STATE.currentUser.ID || s.DATE!==today) return false;
@@ -5711,10 +5926,10 @@ function handleRoomScan(room){
     if(s.LOCATION_TYPE==='ROOM') return s.ROOM_ID===room.ID;
     return false;
   });
-  dutyLogForm({roomId:room.ID, buildingId:'', matched:matched});
+  dutyLogForm({roomId:room.ID, buildingId:'', matched:matched, scanMeta:scanMeta});
 }
 
-function handleBuildingScan(buildingId){
+function handleBuildingScan(buildingId, scanMeta){
   const building=DB.BUILDINGS.find(function(b){ return b.ID===buildingId; });
   if(!building){ showToast('Gedung tidak ditemukan.','error'); return; }
   const today=todayStr();
@@ -5724,8 +5939,9 @@ function handleBuildingScan(buildingId){
     if(s.LOCATION_TYPE==='ALL_ROOMS_BUILDING') return s.BUILDING_ID===building.ID;
     return false;
   });
-  dutyLogForm({roomId:'', buildingId:building.ID, matched:matched});
+  dutyLogForm({roomId:'', buildingId:building.ID, matched:matched, scanMeta:scanMeta});
 }
+
 function dutyLogForm(scanContext){
   requirePerm('duty.view');
   const role=roleOf(STATE.currentUser);
@@ -5746,7 +5962,14 @@ function dutyLogForm(scanContext){
       ? '<div class="hint" style="background:#F0FDF4;border-radius:8px;padding:8px 10px;color:#15803D">✅ Lokasi ini sesuai jadwal piket Anda hari ini.</div>'
       : '<div class="hint" style="background:#FFFBEB;border-radius:8px;padding:8px 10px;color:#B45309">⚠️ Lokasi ini TIDAK terdaftar di jadwal piket Anda hari ini. Laporan tetap bisa disimpan, tapi akan ditandai di luar jadwal.</div>'
   );
-
+  const scanMeta = scanContext ? (scanContext.scanMeta||{}) : {};
+  const deviceInfoText = scanMeta.device || '';
+  const geo = scanMeta.geo || null;
+  const scanMetaHint = !isScan ? '' : (
+    '<div class="hint">📱 Perangkat: <b>'+escapeHtml(deviceInfoText||'-')+'</b>'+
+    (geo ? ' · 📍 <a href="'+mapsLinkFromGeo(geo)+'" target="_blank">Lihat Lokasi GPS</a>' : ' · 📍 Lokasi GPS tidak tersedia (izin ditolak/tidak didukung)')+
+    '</div>'
+  );
   const nowTime=(function(){ const n=new Date(); return String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0'); })();
 
   openModal('📋 Lapor Pelaksanaan Tugas', `
@@ -5762,6 +5985,7 @@ function dutyLogForm(scanContext){
       ${isScan?`
         <div class="form-full"><div class="hint">📍 Lokasi hasil scan: <b>${escapeHtml(locationLabel)}</b></div></div>
         ${scheduleHint?`<div class="form-full">${scheduleHint}</div>`:''}
+        ${scanMetaHint?`<div class="form-full">${scanMetaHint}</div>`:''}
       `:`
         <div class="form-full">
           <label>Jenis Lokasi</label>
@@ -5792,6 +6016,9 @@ function dutyLogForm(scanContext){
     <input type="hidden" id="dl_PRESET_BUILDING_ID" value="${building?building.ID:''}">
     <input type="hidden" id="dl_MATCHED_SCHEDULE_ID" value="${matched?matched.ID:''}">
     <input type="hidden" id="dl_IS_SCAN" value="${isScan?'TRUE':'FALSE'}">
+    <input type="hidden" id="dl_DEVICE_INFO" value="${escapeHtml(deviceInfoText)}">
+    <input type="hidden" id="dl_GPS_LAT" value="${geo?geo.lat:''}">
+    <input type="hidden" id="dl_GPS_LNG" value="${geo?geo.lng:''}">
   `,[
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveDutyLog()">💾 Simpan Laporan</button>`
@@ -5851,7 +6078,10 @@ async function saveDutyLog(){
     const presetBuildingId=getValue('dl_PRESET_BUILDING_ID');
     const matchedScheduleId=getValue('dl_MATCHED_SCHEDULE_ID');
     const isScan=getValue('dl_IS_SCAN')==='TRUE';
-
+    const deviceInfo=getValue('dl_DEVICE_INFO');
+    const gpsLat=getValue('dl_GPS_LAT');
+    const gpsLng=getValue('dl_GPS_LNG');
+    const gpsMapLink = (gpsLat&&gpsLng) ? ('https://www.google.com/maps?q='+gpsLat+','+gpsLng) : '';
     let roomId='', buildingId='', locationType='ROOM', location='';
 
     if(presetRoomId){
@@ -5916,6 +6146,10 @@ async function saveDutyLog(){
       IS_SCAN: isScan ? 'TRUE' : 'FALSE',
       IN_SCHEDULE: isScan ? (matchedScheduleId ? 'TRUE' : 'FALSE') : '',
       MATCHED_SCHEDULE_ID:matchedScheduleId,
+      DEVICE_INFO:deviceInfo,
+      GPS_LAT:gpsLat,
+      GPS_LNG:gpsLng,
+      GPS_MAP_LINK:gpsMapLink,
       CREATED_AT:nowStr()
     };
 
@@ -5943,7 +6177,10 @@ function dutyLogDetail(row){
     <div class="kv"><span>Kondisi</span>${statusBadge(row.CONDITION)}</div>
     ${row.NOTE?`<div class="kv"><span>Catatan</span><b>${escapeHtml(row.NOTE)}</b></div>`:''}
     ${row.IS_SCAN==='TRUE'?`<div class="kv"><span>Sesuai Jadwal</span><b>${row.IN_SCHEDULE==='TRUE'?'✅ Ya':'⚠️ Tidak, di luar jadwal'}</b></div>`:''}
-    <div style="margin-top:12px"><label style="font-size:11.5px;font-weight:700;color:#3A4258">Foto</label>${photoHtml}</div>  `,[`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);
+    ${row.DEVICE_INFO?`<div class="kv"><span>Perangkat</span><b>${escapeHtml(row.DEVICE_INFO)}</b></div>`:''}
+    ${row.GPS_MAP_LINK?`<div class="kv"><span>Lokasi GPS</span><b><a href="${row.GPS_MAP_LINK}" target="_blank">📍 Lihat di Peta</a></b></div>`:''}
+    <div style="margin-top:12px"><label style="font-size:11.5px;font-weight:700;color:#3A4258">Foto</label>${photoHtml}</div>
+    `,[`<button class="btn btn-light" onclick="closeModal()">Tutup</button>`]);
 }
 
 async function dutyLogDelete(id){
@@ -6788,6 +7025,32 @@ function showToast(message,type){
 /* =========================================================
    HELPERS
 ========================================================= */
+function getDeviceInfo(){
+  const ua=navigator.userAgent||'';
+  if(/iPhone/i.test(ua)) return 'iPhone';
+  if(/iPad/i.test(ua)) return 'iPad';
+  if(/Android/i.test(ua)){
+    const match=ua.match(/Android[^;]*;\s*([^)]+)\)/i);
+    return match ? match[1].split('Build')[0].trim() : 'Android';
+  }
+  if(/Windows/i.test(ua)) return 'Windows PC';
+  if(/Macintosh/i.test(ua)) return 'Mac';
+  return ua.substring(0,60) || 'Tidak diketahui';
+}
+
+function getCurrentLocation(){
+  return new Promise(function(resolve){
+    if(!navigator.geolocation){ resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      function(pos){ resolve({lat:pos.coords.latitude, lng:pos.coords.longitude}); },
+      function(){ resolve(null); },
+      {timeout:8000, enableHighAccuracy:true}
+    );
+  });
+}
+function mapsLinkFromGeo(geo){
+  return geo ? ('https://www.google.com/maps?q='+geo.lat+','+geo.lng) : '';
+}
 function getValue(id){ const el = document.getElementById(id); return el ? el.value : ''; }
 function escapeHtml(value){
   return String(value===undefined||value===null?'':value)
