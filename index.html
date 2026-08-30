@@ -790,7 +790,7 @@ const DEFAULT_ROLES = [
   {CODE:'PENGELOLA',NAME:'Pengelola Sarpras',DESCRIPTION:'Mengelola operasional sarana & prasarana sehari-hari.',
     PERMS:['dashboard.view','asset.view','asset.manage','asset_unit.view','asset_unit.manage','room.view','room.manage',
       'booking.view','booking.approve','booking.cancel','booking.checkout','stock.view','stock.take','stock.approve','report.view','report.assign','report.close',
-      'maintenance.view','maintenance.create','maintenance.manage','audit.view','duty.manage','vehicle.manage']},    PERMS:['dashboard.view','asset_unit.view','room.view','booking.view','booking.checkout','stock.view','stock.take','report.view','report.process','maintenance.view','maintenance.manage']},
+      'maintenance.view','maintenance.create','maintenance.manage','audit.view','duty.manage','vehicle.manage']},
   {CODE:'DOSEN',NAME:'Dosen',DESCRIPTION:'Pengguna sivitas akademik — dosen.',
     PERMS:['dashboard.view','room.view','booking.view','booking.create','stock.view','stock.take','report.view','report.create']},
   {CODE:'MAHASISWA',NAME:'Mahasiswa',DESCRIPTION:'Pengguna sivitas akademik — mahasiswa.',
@@ -799,10 +799,9 @@ const DEFAULT_ROLES = [
     PERMS:['dashboard.view','asset.view','room.view','booking.view','stock.view','report.view','maintenance.view','audit.view']},
   {CODE:'CLEANING',NAME:'Cleaning Service',DESCRIPTION:'Petugas kebersihan — melihat jadwal piket sendiri.',
     PERMS:['dashboard.view','duty.view']},
-{CODE:'SATPAM',NAME:'Satpam',DESCRIPTION:'Petugas keamanan — melihat jadwal piket sendiri & mengelola buku tamu kendaraan.',    
- PERMS:['dashboard.view','duty.view','vehicle.manage']}
+  {CODE:'SATPAM',NAME:'Satpam',DESCRIPTION:'Petugas keamanan — melihat jadwal piket sendiri & mengelola buku tamu kendaraan.',
+    PERMS:['dashboard.view','duty.view','vehicle.manage']}
 ];
-
 const MENUS = [
   {group:'',code:'dashboard',name:'Dashboard',icon:'📊',route:'dashboard',perm:'dashboard.view'},
   {group:'Inventaris',code:'assets',name:'Semua Aset',icon:'📦',route:'assets',perm:'asset.view'},
