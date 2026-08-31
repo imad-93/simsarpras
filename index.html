@@ -5644,11 +5644,46 @@ async function deleteMyVehicle(id){
 /* ========================================================= 
 BUKU TAMU KENDARAAN (khusus Satpam)
 ========================================================= */
-  function renderVehicleLog(){  try{    requirePerm('vehicle.manage');    const content=document.getElementById('content');    const today=todayStr();    const todayLogs=(DB.VEHICLE_LOGS||[]).filter(function(v){ return v.DATE===today; });    const stillInside=todayLogs.filter(function(v){ return v.STATUS==='DI_DALAM'; }).length;     content.innerHTML=`      <div class="page-title">🚗 Buku Tamu Kendaraan</div>      <div class="page-subtitle">Catatan keamanan kendaraan masuk dan keluar area kampus.</div>      <div class="stats">        ${stat('Kendaraan Masuk Hari Ini',todayLogs.length,'🚙','#EEF0FF','#4338CA')}        ${stat('Sedang di Dalam',stillInside,'🅿️','#FFFBEB','#B45309')}      </div> <div class="card">        <div class="toolbar">          <div class="toolbar-left">            <input id="vlSearch" class="search-box" placeholder="🔎 Cari nopol/nama..." oninput="renderVehicleLogTable()">            <input id="vlDateFilter" type="date" value="${today}" onchange="renderVehicleLogTable()">          </div>          <div class="toolbar-right">          <div class="toolbar-right">
+  function renderVehicleLog(){
+  try{
+    requirePerm('vehicle.manage');
+    const content=document.getElementById('content');
+    const today=todayStr();
+    const todayLogs=(DB.VEHICLE_LOGS||[]).filter(function(v){ return v.DATE===today; });
+    const stillInside=todayLogs.filter(function(v){ return v.STATUS==='DI_DALAM'; }).length;
+     
+    content.innerHTML=`
+      <div class="page-title">🚗 Buku Tamu Kendaraan</div>
+      <div class="page-subtitle">Catatan keamanan kendaraan masuk dan keluar area kampus.</div>
+      <div class="stats">
+        ${stat('Kendaraan Masuk Hari Ini',todayLogs.length,'🚙','#EEF0FF','#4338CA')}
+        ${stat('Sedang di Dalam',stillInside,'🅿️','#FFFBEB','#B45309')}
+      </div> 
+      <div class="card">
+        <div class="toolbar">
+          <div class="toolbar-left">
+            <input id="vlSearch" class="search-box" placeholder="🔎 Cari nopol/nama..." oninput="renderVehicleLogTable()">
+            <input id="vlDateFilter" type="date" value="${today}" onchange="renderVehicleLogTable()">
+          </div>
+          <div class="toolbar-right">
             <button class="btn btn-primary" onclick="scanRegisteredVehicle()">📷 Scan Kendaraan Terdaftar</button>
             <button class="btn btn-light" onclick="vehicleLogForm()">+ Catat Kendaraan Tamu/Manual</button>
-          </div>        </div>        <div id="vehicleLogTable"></div>      </div>    `;    renderVehicleLogTable();  }catch(error){    showToast(getErrorMessage(error),'error');  }}
-  function renderVehicleLogTable(){  
+          </div>
+        </div>
+        
+        <!-- FIX: Bungkus elemen tabel dengan class .table-wrapper bawaan CSS Anda -->
+        <div class="table-wrapper">
+          <div id="vehicleLogTable"></div>
+        </div>
+        
+      </div>
+    `;
+    renderVehicleLogTable();
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
+}
+function renderVehicleLogTable(){  
     const keyword=(document.getElementById('vlSearch')?.value||'').toLowerCase();  
     const dateFilter=document.getElementById('vlDateFilter')?.value||'';   
     let rows=(DB.VEHICLE_LOGS||[]).slice();  if(dateFilter) rows=rows.filter(function(r){ return r.DATE===dateFilter; });  
