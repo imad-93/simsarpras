@@ -897,7 +897,7 @@ function TABLE_CONFIGS(){
         {key:'FLOOR',label:'Lantai',type:'number'},
         {key:'CAPACITY',label:'Kapasitas (orang)',type:'number'},
         {key:'RENTAL_FEE',label:'Tarif Sewa (Rp/pemakaian)',type:'number'},
-        {key:'RENTAL_UNIT',label:'Satuan Tarif',type:'select',options:[['HARI','Per Hari'],['JAM','Per Jam']],default:'HARI'},
+        {key:'RENTAL_UNIT',label:'Satuan Tarif',type:'select',options:[['HARI','Per Hari'],['JAM','Per Jam']],default:(DB.APP_SETTINGS&&DB.APP_SETTINGS.DEFAULT_RENTAL_UNIT)||'HARI'},
         {key:'CAN_BOOK',label:'Bisa Dibooking',type:'select',options:[['TRUE','Bisa Dibooking'],['FALSE','Tidak Bisa Dibooking']],default:'TRUE'},
         {key:'FACILITIES',label:'Fasilitas Fisik di Ruangan (info umum)',full:true,placeholder:'AC, Proyektor, Sound system, ... (sekadar info, bukan penentu biaya)'},
         {key:'INCLUDED_FACILITIES',label:'Fasilitas yang SUDAH TERMASUK dalam Tarif Sewa',type:'textarea',full:true,placeholder:'Contoh: AC, Proyektor, Sound System sudah termasuk. Kosongkan jika sewa murni ruangan tanpa fasilitas apapun.'},
@@ -990,6 +990,8 @@ async function buildDefaultDB(){
       DEFAULT_BASE_FEE:0,
       DEFAULT_ASSET_BASE_FEE:0,
       DEFAULT_FACILITY_FEE:0,
+DEFAULT_RENTAL_UNIT:'HARI',
+DEFAULT_ASSET_RENTAL_UNIT:'HARI',
 REPORT_SETTINGS:{
   ENABLED:'TRUE',
   DEFAULT_PERIOD:'HARIAN',
@@ -1112,7 +1114,9 @@ async function loadDB(){
   migrateDB();
   await saveDB();
 }
-function applyOrganizationHierarchy(){const map={WAREK_I:'REKTOR',WAREK_II:'REKTOR',WAREK_III:'REKTOR',WAREK_IV:'REKTOR',BAK_SARPRAS:'WAREK_II',OB_DRIVER:'WAREK_IV',KOOR_SECURITY:'WAREK_IV',KEPALA_LAB:'WAREK_IV',KOOR_IT:'WAREK_IV',ANGGOTA_SECURITY:'KOOR_SECURITY',CS_PAGI:'KOOR_SECURITY',GARDENER:'KOOR_SECURITY',STAF_PASCASARJANA:'WAREK_I',STAF_FAKULTAS:'WAREK_I',STAF_KAMPUS_2:'WAREK_I',ANGGOTA_IT:'KOOR_IT',BPPLE:'KOOR_IT'};const byPosition={};(DB.ORGANIZATIONS||[]).forEach(function(o){byPosition[o.POSITION]=o;});(DB.ORGANIZATIONS||[]).forEach(function(o){const parentPosition=map[o.POSITION];const parent=parentPosition?byPosition[parentPosition]:null;if(parent&&o.ID!==parent.ID){o.PARENT_ID=parent.ID;o.PARENT_NAME=parent.POSITION+' — '+(parent.NAME||'Belum diisi')+(parent.USER_NAME?' · '+parent.USER_NAME:'');}else if(!parentPosition){o.PARENT_ID='';o.PARENT_NAME='-';}});}
+function applyOrganizationHierarchy(){const map={WAREK_I:'REKTOR',WAREK_II:'REKTOR',WAREK_III:'REKTOR',WAREK_IV:'REKTOR',BAK_SARPRAS:'WAREK_II',OB_DRIVER:'WAREK_IV',KOOR_SECURITY:'WAREK_IV',KEPALA_LAB:'WAREK_IV',KOOR_IT:'WAREK_IV',ANGGOTA_SECURITY:'KOOR_SECURITY',CS_PAGI:'KOOR_SECURITY',GARDENER:'KOOR_SECURITY',STAF_PASCASARJANA:'WAREK_I',STAF_FAKULTAS:'WAREK_I',STAF_KAMPUS_2:'WAREK_I',ANGGOTA_IT:'KOOR_IT',BPPLE:'KOOR_IT'};const byPosition={};(DB.ORGANIZATIONS||[]).forEach(function(o){byPosition[o.POSITION]=o;});(DB.ORGANIZATIONS||[]).forEach(function(o){if(o.PARENT_ID)return;const parentPosition=map[o.POSITION];const parent=parentPosition?byPosition[parentPosition]:null;if(parent&&o.ID!==parent.ID){o.PARENT_ID=parent.ID;o.PARENT_NAME=parent.POSITION+' — '+(parent.NAME||'Belum diisi')+(parent.USER_NAME?' · '+parent.USER_NAME:'');}else if(!parentPosition){o.PARENT_ID='';o.PARENT_NAME='-';}});}
+function syncUserOrganization(userId,orgId){(DB.ORGANIZATIONS||[]).forEach(function(o){let ids=Array.isArray(o.USER_IDS)?o.USER_IDS.slice():(o.USER_ID?[o.USER_ID]:[]);ids=ids.filter(function(x){return x!==userId;});if(o.ID===orgId&&userId&&o.ACTIVE!=='FALSE')ids.push(userId);o.USER_IDS=Array.from(new Set(ids));o.USER_ID=o.USER_IDS[0]||'';o.USER_NAME=DB.USERS.filter(function(u){return o.USER_IDS.includes(u.ID)&&u.STATUS==='AKTIF';}).map(function(u){return u.NAME;}).join(', ');});}
+function syncOrganizationsFromUsers(){(DB.USERS||[]).forEach(function(u){const org=(DB.ORGANIZATIONS||[]).find(function(o){return o.ID===u.ORG_ID&&o.ACTIVE!=='FALSE';});if(!org){u.ORG_ID='';u.ORG_POSITION='';u.ORG_NAME='';u.ORG_UNIT='';return;}u.ORG_POSITION=org.POSITION;u.ORG_NAME=org.NAME||'';u.ORG_UNIT=org.UNIT||'';});(DB.ORGANIZATIONS||[]).forEach(function(o){const ids=(DB.USERS||[]).filter(function(u){return u.STATUS==='AKTIF'&&u.ORG_ID===o.ID;}).map(function(u){return u.ID;});o.USER_IDS=ids;o.USER_ID=ids[0]||'';o.USER_NAME=DB.USERS.filter(function(u){return ids.includes(u.ID);}).map(function(u){return u.NAME;}).join(', ');});}
 function migrateDB(){
   DEFAULT_ROLES.forEach(function(defRole){
     if(!DB.ROLES.some(function(r){ return r.CODE===defRole.CODE; })){
@@ -1130,6 +1134,8 @@ function migrateDB(){
   if(!Array.isArray(DB.ORGANIZATIONS))DB.ORGANIZATIONS=[];
   (DB.ORGANIZATIONS||[]).forEach(function(o){if(!Array.isArray(o.USER_IDS))o.USER_IDS=o.USER_ID?[o.USER_ID]:[];if(!o.USER_ID&&o.USER_IDS.length)o.USER_ID=o.USER_IDS[0];if(!o.USER_NAME&&o.USER_IDS.length)o.USER_NAME=DB.USERS.filter(function(u){return o.USER_IDS.includes(u.ID);}).map(function(u){return u.NAME;}).join(', ');});
   applyOrganizationHierarchy();
+  (DB.USERS||[]).forEach(function(u){if(u.ORG_ID===undefined){const org=(DB.ORGANIZATIONS||[]).find(function(o){const ids=Array.isArray(o.USER_IDS)?o.USER_IDS:(o.USER_ID?[o.USER_ID]:[]);return ids.includes(u.ID)&&o.ACTIVE!=='FALSE';});u.ORG_ID=org?org.ID:'';}if(u.ORG_POSITION===undefined)u.ORG_POSITION='';if(u.ORG_NAME===undefined)u.ORG_NAME='';if(u.ORG_UNIT===undefined)u.ORG_UNIT='';});
+  syncOrganizationsFromUsers();
   if(!DB.APP_SETTINGS.TASK_ROUTING_RULES||typeof DB.APP_SETTINGS.TASK_ROUTING_RULES!=='object')DB.APP_SETTINGS.TASK_ROUTING_RULES={};const defaultRoutingPositions={IT:['KOOR_IT','ANGGOTA_IT'],BPPLE:['BPPLE'],SECURITY:['KOOR_SECURITY','ANGGOTA_SECURITY'],CS:['CS_PAGI','KOOR_SECURITY'],GARDENER:['GARDENER','KOOR_SECURITY'],OB_DRIVER:['OB_DRIVER'],BAK_SARPRAS:['BAK_SARPRAS']};Object.keys(defaultRoutingPositions).forEach(function(code){if(DB.APP_SETTINGS.TASK_ROUTING_RULES[code])return;const org=(DB.ORGANIZATIONS||[]).find(function(o){return o.ACTIVE==='TRUE'&&defaultRoutingPositions[code].includes(o.POSITION);});if(org)DB.APP_SETTINGS.TASK_ROUTING_RULES[code]=org.ID;});if(!Array.isArray(DB.WORK_PROGRAMS))DB.WORK_PROGRAMS=[];
   if(!Array.isArray(DB.CHECKLIST_LOGS))DB.CHECKLIST_LOGS=[];
   if(!Array.isArray(DB.VEHICLE_LOGS))DB.VEHICLE_LOGS=[];
@@ -1140,6 +1146,13 @@ function migrateDB(){
   if(!DB.APP_SETTINGS)DB.APP_SETTINGS={};
   if(DB.APP_SETTINGS.ENABLE_STOCK===undefined)DB.APP_SETTINGS.ENABLE_STOCK='TRUE';
   if(DB.APP_SETTINGS.BANK_INFO===undefined)DB.APP_SETTINGS.BANK_INFO='';
+  if(DB.APP_SETTINGS.DEFAULT_BASE_FEE===undefined)DB.APP_SETTINGS.DEFAULT_BASE_FEE=0;
+  if(DB.APP_SETTINGS.DEFAULT_ASSET_BASE_FEE===undefined)DB.APP_SETTINGS.DEFAULT_ASSET_BASE_FEE=0;
+  if(DB.APP_SETTINGS.DEFAULT_FACILITY_FEE===undefined)DB.APP_SETTINGS.DEFAULT_FACILITY_FEE=0;
+  if(DB.APP_SETTINGS.DEFAULT_RENTAL_UNIT===undefined)DB.APP_SETTINGS.DEFAULT_RENTAL_UNIT='HARI';
+  DB.APP_SETTINGS.DEFAULT_RENTAL_UNIT=String(DB.APP_SETTINGS.DEFAULT_RENTAL_UNIT).toUpperCase()==='JAM'?'JAM':'HARI';
+  if(DB.APP_SETTINGS.DEFAULT_ASSET_RENTAL_UNIT===undefined)DB.APP_SETTINGS.DEFAULT_ASSET_RENTAL_UNIT=DB.APP_SETTINGS.DEFAULT_RENTAL_UNIT;
+  DB.APP_SETTINGS.DEFAULT_ASSET_RENTAL_UNIT=String(DB.APP_SETTINGS.DEFAULT_ASSET_RENTAL_UNIT).toUpperCase()==='JAM'?'JAM':'HARI';
   (DB.ROOMS||[]).forEach(function(room){
     room.RENTAL_FEE=Number(room.RENTAL_FEE)||0;
     room.RENTAL_UNIT=String(room.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
@@ -1654,13 +1667,7 @@ function requirePerm(perm){
     throw new Error('Anda tidak mempunyai hak akses untuk aksi ini ('+perm+').');
   }
 }
-function sanitizeUser(u){
-  const c = Object.assign({},u);
-  delete c.PASSWORD_HASH;
-  const role = roleOf(u);
-  c.ROLE = role ? role.NAME : u.ROLE_CODE;
-  return c;
-}
+function sanitizeUser(u){const c=Object.assign({},u);delete c.PASSWORD_HASH;const role=roleOf(u);const org=getOrganizationForUser(u.ID);c.ROLE=role?role.NAME:u.ROLE_CODE;c.ORG_ID=org?org.ID:'';c.ORG_POSITION=org?org.POSITION:'';c.ORG_NAME=org?org.NAME:'';c.ORG_UNIT=org?org.UNIT:'';c.PERMS=role?role.PERMS||[]:[];return c;}
 function settingBool(key){
   return String(DB.APP_SETTINGS[key]).toUpperCase() === 'TRUE';
 }
@@ -2414,7 +2421,7 @@ function filterAssets(){
 }
 function renderAssetTable(rows,canManage){
   document.getElementById('assetsTable').innerHTML = renderTableHtml(rows,
-    [['FOTO_BARANG_URL','Foto'],['CODE','Kode'],['NAME','Nama'],['CATEGORY_ID','Kategori'],['TYPE','Tipe'],['CAN_LEND','Bisa Dipinjam'],['RENTAL_FEE','Harga Sewa/Pinjam'],['UNIT_PRICE','Harga'],['ACTIVE','Status']],
+    [['FOTO_BARANG_URL','Foto'],['CODE','Kode'],['NAME','Nama'],['CATEGORY_ID','Kategori'],['TYPE','Tipe'],['CAN_LEND','Bisa Dipinjam'],['RENTAL_FEE','Harga Sewa/Pinjam'],['RENTAL_UNIT','Satuan'],['UNIT_PRICE','Harga'],['ACTIVE','Status']],
     function(row){
       const unitCount = DB.ASSET_UNITS.filter(u=>u.ASSET_ID===row.ID).length;
       let html = `<span class="badge badge-gray" style="margin-right:5px">${unitCount} unit</span>
@@ -2459,6 +2466,8 @@ function assetDetail(row){
 }
 function assetForm(row){
   row=row||{};
+  const defaultAssetUnit=String((DB.APP_SETTINGS&&DB.APP_SETTINGS.DEFAULT_ASSET_RENTAL_UNIT)||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+  const defaultAssetFee=Number(DB.APP_SETTINGS&&DB.APP_SETTINGS.DEFAULT_ASSET_BASE_FEE)||0;
   openModal(row.ID?'Edit Aset':'Tambah Aset',`
     <div class="form-grid">
       <div><label>Kode</label><input id="f_CODE" value="${escapeHtml(row.CODE||'')}" placeholder="Biarkan kosong untuk auto-generate"></div>
@@ -2471,8 +2480,8 @@ function assetForm(row){
       <div><label>Tahun Perolehan</label><input id="f_ACQUISITION_YEAR" type="number" value="${escapeHtml(row.ACQUISITION_YEAR||'')}"></div>
       <div><label>Harga Satuan (nilai aset)</label><input id="f_UNIT_PRICE" type="number" min="0" value="${escapeHtml(row.UNIT_PRICE||'')}"></div>
       <div style="display:flex;align-items:flex-end"><label class="checkline" style="margin:0"><input id="f_CAN_LEND" type="checkbox" onchange="onAssetCanLendChange()"> Bisa Dipinjamkan</label></div>
-      <div id="f_rentalFeeWrap"><label>Tarif Peminjaman</label><input id="f_RENTAL_FEE" type="number" min="0" value="${escapeHtml(row.RENTAL_FEE||0)}"></div>
-      <div id="f_rentalUnitWrap"><label>Satuan Tarif</label><select id="f_RENTAL_UNIT"><option value="HARI" ${String(row.RENTAL_UNIT||'HARI').toUpperCase()==='HARI'?'selected':''}>Per Hari</option><option value="JAM" ${String(row.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'selected':''}>Per Jam</option></select></div>
+      <div id="f_rentalFeeWrap"><label>Tarif Peminjaman</label><input id="f_RENTAL_FEE" type="number" min="0" value="${escapeHtml(row.ID?row.RENTAL_FEE:defaultAssetFee)}"></div>
+      <div id="f_rentalUnitWrap"><label>Satuan Tarif</label><select id="f_RENTAL_UNIT"><option value="HARI" ${String(row.RENTAL_UNIT||defaultAssetUnit).toUpperCase()==='HARI'?'selected':''}>Per Hari</option><option value="JAM" ${String(row.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'selected':''}>Per Jam</option></select></div>
       <div style="display:flex;align-items:flex-end"><label class="checkline" style="margin:0"><input id="f_IS_FACILITY" type="checkbox" onchange="onAssetIsFacilityChange()"> Fasilitas Tambahan</label></div>
       <div id="f_facilityFeeWrap"><label>Biaya Tambahan Pemakaian Fasilitas (Rp)</label><input id="f_FACILITY_FEE" type="number" min="0" value="${escapeHtml(row.FACILITY_FEE||0)}"></div>
       <div id="f_facilityMobilityWrap"><label>Sifat Fasilitas</label>
@@ -2652,7 +2661,7 @@ function downloadAssetTemplate(){
     'Kategori':(DB.ASSET_CATEGORIES[0]?DB.ASSET_CATEGORIES[0].NAME:'Furniture'),
     'Merk':'Chitose','Model':'CT-01','Nomor Seri':'','Tahun Perolehan':2023,'Harga Satuan':350000,
     'Spesifikasi Barang':'Rangka besi, dudukan plastik, kapasitas beban 100kg','Dimensi':'45x50x90 cm',
-    'Bisa Dipinjamkan (YA/TIDAK)':'TIDAK','Harga Sewa per Unit':0,
+    'Bisa Dipinjamkan (YA/TIDAK)':'TIDAK','Harga Sewa per Unit':0,'Satuan Tarif (HARI/JAM)':String((DB.APP_SETTINGS&&DB.APP_SETTINGS.DEFAULT_ASSET_RENTAL_UNIT)||'HARI'),
     'Fasilitas Tambahan (YA/TIDAK)':'TIDAK','Biaya Tambahan Fasilitas':0,
     'URL Foto Nota':'','URL Foto Barang':'','Keterangan':''
   }];
@@ -2709,7 +2718,7 @@ async function processAssetImport(){
         BRAND:String(r['Merk']||''), MODEL:String(r['Model']||''), SERIAL_NUMBER:String(r['Nomor Seri']||''),
         ACQUISITION_YEAR:r['Tahun Perolehan']||'', UNIT_PRICE:Number(r['Harga Satuan'])||0,
         SPESIFIKASI:String(r['Spesifikasi Barang']||''), DIMENSI:String(r['Dimensi']||''),
-        CAN_LEND:canLend?'TRUE':'FALSE', RENTAL_FEE:Number(r['Harga Sewa per Unit'])||0,
+        CAN_LEND:canLend?'TRUE':'FALSE', RENTAL_FEE:Number(r['Harga Sewa per Unit'])||0, RENTAL_UNIT:String(r['Satuan Tarif (HARI/JAM)']||((DB.APP_SETTINGS&&DB.APP_SETTINGS.DEFAULT_ASSET_RENTAL_UNIT)||'HARI')).trim().toUpperCase()==='JAM'?'JAM':'HARI',
         IS_FACILITY:isFacility?'TRUE':'FALSE', FACILITY_FEE:Number(r['Biaya Tambahan Fasilitas'])||0,
         FOTO_NOTA_URL:String(r['URL Foto Nota']||''), FOTO_BARANG_URL:String(r['URL Foto Barang']||''),
         DESCRIPTION:String(r['Keterangan']||''), ACTIVE:'TRUE', CREATED_AT:nowStr()
@@ -3565,7 +3574,7 @@ function assetBookingForm(){
       <div><label>Tanggal Selesai *</label><input id="ab_END_DATE" type="date" min="${todayStr()}" onchange="updateAssetBookingDuration()"></div>
       <div><label>Jam Mulai *</label><input id="ab_START_TIME" type="time" onchange="updateAssetBookingDuration()"></div>
       <div><label>Jam Selesai *</label><input id="ab_END_TIME" type="time" onchange="updateAssetBookingDuration()"></div>
-      <div><label>Satuan Durasi</label><select id="ab_UNIT" onchange="updateAssetBookingDuration()"><option value="HARI">Hari</option><option value="JAM">Jam</option></select></div>
+      <div><label>Satuan Durasi</label><input value="Mengikuti Satuan Tarif Master Aset" readonly></div>
       <div class="form-full"><div id="ab_duration_hint" class="hint"></div></div>
     </div>
     <div class="form-group" style="margin-top:10px">
@@ -3602,24 +3611,16 @@ function updateAssetBookingDuration(){
   const endDate=getValue('ab_END_DATE');
   const startTime=getValue('ab_START_TIME');
   const endTime=getValue('ab_END_TIME');
-  const unit=getValue('ab_UNIT')||'HARI';
-
-  if(!startDate||!endDate||!startTime||!endTime){
-    hint.textContent='';
-    return;
-  }
-
+  if(!startDate||!endDate||!startTime||!endTime){hint.textContent='';return;}
   const start=new Date(startDate+'T'+startTime);
   const end=new Date(endDate+'T'+endTime);
-
-  if(isNaN(start.getTime())||isNaN(end.getTime())||end<=start){
-    hint.innerHTML='<span style="color:#D93025">Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.</span>';
-    return;
-  }
-
+  if(isNaN(start.getTime())||isNaN(end.getTime())||end<=start){hint.innerHTML='<span style="color:#D93025">Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.</span>';return;}
   const duration=calculateBookingDuration(startDate,endDate,startTime,endTime);
-  hint.innerHTML='Akumulasi: <b>'+duration.days+' hari</b> / <b>'+duration.hours+' jam</b> · Digunakan: <b>'+duration.qty+' '+(unit==='HARI'?'hari':'jam')+'</b> · Total biaya internal: <b>Rp0</b>';
+  const units=new Set(STATE.assetCart.map(function(item){const asset=DB.ASSETS.find(function(a){return a.ID===item.ASSET_ID;});return asset&&String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';}));
+  const unitText=units.size===0?'Mengikuti satuan Master Aset':units.size===1?(units.has('JAM')?'Per Jam':'Per Hari'):'Campuran Per Hari dan Per Jam';
+  hint.innerHTML='Akumulasi: <b>'+duration.days+' hari</b> / <b>'+duration.hours+' jam</b> · Satuan: <b>'+unitText+'</b> · Biaya internal: <b>Rp0</b>';
 }
+
 function assetAvailableStock(assetId){
   return DB.ASSET_UNITS.filter(u=>u.ASSET_ID===assetId && !['MAINTENANCE','RUSAK'].includes(String(u.STATUS).toUpperCase())).length;
 }
@@ -3681,101 +3682,34 @@ function renderAssetCart(){
 async function saveAssetBooking(){
   try{
     requirePerm('booking.create');
-
     const date=getValue('ab_DATE');
     const endDate=getValue('ab_END_DATE');
     const start=getValue('ab_START_TIME');
     const end=getValue('ab_END_TIME');
-    const unit=getValue('ab_UNIT')||'HARI';
     const purpose=getValue('ab_PURPOSE');
-
-    if(!date||!endDate||!start||!end||!purpose){
-      showToast('Tanggal, jam, dan keperluan wajib diisi.','warning');
-      return;
-    }
-
+    if(!date||!endDate||!start||!end||!purpose){showToast('Tanggal, jam, dan keperluan wajib diisi.','warning');return;}
     const startDateTime=new Date(date+'T'+start);
     const endDateTime=new Date(endDate+'T'+end);
-
-    if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){
-      showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');
-      return;
-    }
-
-    if(!STATE.assetCart.length){
-      showToast('Pilih minimal 1 barang untuk dipinjam.','warning');
-      return;
-    }
-
+    if(isNaN(startDateTime.getTime())||isNaN(endDateTime.getTime())||endDateTime<=startDateTime){showToast('Tanggal/jam selesai harus lebih besar dari tanggal/jam mulai.','warning');return;}
+    if(!STATE.assetCart.length){showToast('Pilih minimal 1 barang untuk dipinjam.','warning');return;}
     for(const item of STATE.assetCart){
       const totalStock=assetAvailableStock(item.ASSET_ID);
-      const reserved=DB.BOOKINGS
-        .filter(b=>b.TYPE==='ASSET'&&['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS))
-        .filter(b=>{
-          const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));
-          const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));
-          return startDateTime<bEnd&&endDateTime>bStart;
-        })
-        .reduce((sum,b)=>{
-          const found=(b.ITEMS||[]).find(i=>i.ASSET_ID===item.ASSET_ID);
-          return sum+(found?Number(found.QTY)||0:0);
-        },0);
-
-      if(reserved+item.QTY>totalStock){
-        showToast('Stok "'+item.ASSET_NAME+'" tidak mencukupi pada jadwal tersebut. Tersedia: '+Math.max(totalStock-reserved,0)+'.','warning');
-        return;
-      }
+      const reserved=DB.BOOKINGS.filter(b=>b.TYPE==='ASSET'&&['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS)).filter(b=>{const bStart=new Date((b.DATE||'')+'T'+(b.START_TIME||'00:00'));const bEnd=new Date((b.END_DATE||b.DATE||'')+'T'+(b.END_TIME||'23:59'));return startDateTime<bEnd&&endDateTime>bStart;}).reduce((sum,b)=>{const found=(b.ITEMS||[]).find(i=>i.ASSET_ID===item.ASSET_ID);return sum+(found?Number(found.QTY)||0:0);},0);
+      if(reserved+item.QTY>totalStock){showToast('Stok "'+item.ASSET_NAME+'" tidak mencukupi pada jadwal tersebut. Tersedia: '+Math.max(totalStock-reserved,0)+'.','warning');return;}
     }
-
     const duration=calculateBookingDuration(date,endDate,start,end);
-    const items=STATE.assetCart.map(c=>({
-      ASSET_ID:c.ASSET_ID,
-      ASSET_NAME:c.ASSET_NAME,
-      QTY:c.QTY,
-      FEE_PER_UNIT:0,
-      ISSUED_UNIT_IDS:[],
-      RETURNED_UNIT_IDS:[]
-    }));
-
+    const items=STATE.assetCart.map(c=>{const asset=DB.ASSETS.find(a=>a.ID===c.ASSET_ID);const unit=asset&&String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';return{ASSET_ID:c.ASSET_ID,ASSET_NAME:c.ASSET_NAME,QTY:c.QTY,FEE_PER_UNIT:0,RATE_UNIT:unit,ISSUED_UNIT_IDS:[],RETURNED_UNIT_IDS:[]};});
     const itemName=items.map(i=>i.ASSET_NAME+' x'+i.QTY).join(', ');
-
-    const data={
-      ID:uid('BKG'),
-      TYPE:'ASSET',
-      ITEM_ID:'',
-      ITEM_NAME:itemName,
-      USER_ID:STATE.currentUser.ID,
-      USER_NAME:STATE.currentUser.NAME,
-      IS_GUEST:'FALSE',
-      DATE:date,
-      END_DATE:endDate,
-      START_TIME:start,
-      END_TIME:end,
-      DURATION_DAYS:duration.days,
-      DURATION_HOURS:duration.hours,
-      RATE_UNIT:unit,
-      RATE:0,
-      PURPOSE:purpose,
-      ITEMS:items,
-      BASE_FEE:0,
-      FACILITY_FEE:0,
-      TOTAL_FEE:0,
-      FACILITY_LIST:'',
-      STATUS:'MENUNGGU',
-      NOTE:'',
-      CREATED_AT:nowStr()
-    };
-
+    const data={ID:uid('BKG'),TYPE:'ASSET',ITEM_ID:'',ITEM_NAME:itemName,USER_ID:STATE.currentUser.ID,USER_NAME:STATE.currentUser.NAME,IS_GUEST:'FALSE',DATE:date,END_DATE:endDate,START_TIME:start,END_TIME:end,DURATION_DAYS:duration.days,DURATION_HOURS:duration.hours,RATE_UNIT:items.every(i=>i.RATE_UNIT==='HARI')?'HARI':items.every(i=>i.RATE_UNIT==='JAM')?'JAM':'MIXED',RATE:0,PURPOSE:purpose,ITEMS:items,BASE_FEE:0,FACILITY_FEE:0,TOTAL_FEE:0,FACILITY_LIST:'',STATUS:'MENUNGGU',NOTE:'',CREATED_AT:nowStr()};
     DB.BOOKINGS.push(data);
     await audit('CREATE','BOOKINGS',data.ID,'Peminjaman barang baru: '+itemName);
     await saveDB();
     closeModal();
     showToast('Peminjaman barang berhasil diajukan (gratis untuk pengguna internal).','success');
     renderBookings('ASSET');
-  }catch(error){
-    showToast(getErrorMessage(error),'error');
-  }
+  }catch(error){showToast(getErrorMessage(error),'error');}
 }
+
 function assetBookingDetail(row){
   const items=row.ITEMS||[];
   const rowsHtml=items.map(i=>{
@@ -5708,10 +5642,7 @@ function renderOrganizationTable(){
 function organizationForm(row){
   requirePerm('org.manage');row=row||{};openModal(row.ID?'Edit Jabatan':'Tambah Jabatan','<div class="form-grid"><div><label>Jabatan *</label><input id="o_POSITION" value="'+escapeHtml(row.POSITION||'')+'"></div><div><label>Nama</label><input id="o_NAME" value="'+escapeHtml(row.NAME||'')+'" placeholder="Boleh dikosongkan"></div><div><label>Unit/Bagian *</label><input id="o_UNIT" value="'+escapeHtml(row.UNIT||'')+'"></div><div><label>Atasan</label><select id="o_PARENT_ID">'+organizationParentOptions(row.PARENT_ID||'')+'</select></div><div class="form-full"><label>Penanggung Jawab</label><select id="o_USER_ID" multiple size="5">'+organizationUserOptions(row.USER_IDS||row.USER_ID||[])+'</select><div class="hint">Bisa memilih lebih dari satu pengguna untuk satu jabatan.</div></div><div><label>Status</label><select id="o_ACTIVE"><option value="TRUE" '+(row.ACTIVE!=='FALSE'?'selected':'')+'>Aktif</option><option value="FALSE" '+(row.ACTIVE==='FALSE'?'selected':'')+'>Nonaktif</option></select></div><div class="form-full"><label>Deskripsi</label><textarea id="o_DESCRIPTION">'+escapeHtml(row.DESCRIPTION||'')+'</textarea></div></div>',['<button class="btn btn-light" onclick="closeModal()">Batal</button>','<button class="btn btn-primary" onclick="saveOrganization(\''+(row.ID||'')+'\')">💾 Simpan</button>']);
 }
-async function saveOrganization(id){try{requirePerm('org.manage');const position=(getValue('o_POSITION')||'').trim(),name=(getValue('o_NAME')||'').trim(),unit=(getValue('o_UNIT')||'').trim(),parentId=getValue('o_PARENT_ID')||'',userSelect=document.getElementById('o_USER_ID'),userIds=userSelect?Array.from(userSelect.selectedOptions).map(function(o){return o.value;}):[],userId=userIds[0]||'',active=getValue('o_ACTIVE')||'TRUE',description=(getValue('o_DESCRIPTION')||'').trim();if(!position||!unit){showToast('Jabatan dan unit/bagian wajib diisi.','warning');return;}if(parentId===id){showToast('Atasan tidak boleh sama dengan jabatan ini.','warning');return;}if(parentId){let cursor=parentId,guard=0;while(cursor&&guard<100){if(cursor===id){showToast('Atasan tidak boleh berada di bawah jabatan ini karena akan membentuk struktur melingkar.','warning');return;}const parentRow=DB.ORGANIZATIONS.find(function(x){return x.ID===cursor;});cursor=parentRow?parentRow.PARENT_ID:'';guard++;}}const users=DB.USERS.filter(function(u){return userIds.includes(u.ID)&&u.STATUS==='AKTIF';}),parent=DB.ORGANIZATIONS.find(function(x){return x.ID===parentId;}),parentUsers=parent?Array.isArray(parent.USER_IDS)&&parent.USER_IDS.length?DB.USERS.filter(function(u){return parent.USER_IDS.includes(u.ID)&&u.STATUS==='AKTIF';}).map(function(u){return u.NAME;}).join(', '):parent.USER_NAME||'':'';const data={ID:id||uid('ORG'),POSITION:position,NAME:name,UNIT:unit,PARENT_ID:parentId,PARENT_NAME:parent?parent.POSITION+' — '+(parent.NAME||'Belum diisi')+(parentUsers?' · '+parentUsers:''):'-',USER_ID:userId,USER_IDS:userIds,USER_NAME:users.map(function(u){return u.NAME;}).join(', '),DESCRIPTION:description,ACTIVE:active,CREATED_AT:id?(DB.ORGANIZATIONS.find(function(x){return x.ID===id;})||{}).CREATED_AT||nowStr():nowStr(),UPDATED_AT:nowStr()};if(id){const idx=DB.ORGANIZATIONS.findIndex(function(x){return x.ID===id;});if(idx<0)throw new Error('Jabatan tidak ditemukan.');DB.ORGANIZATIONS[idx]=data;await audit('UPDATE','ORGANIZATIONS',id,'Update struktur jabatan '+position);}else{DB.ORGANIZATIONS.push(data);await audit('CREATE','ORGANIZATIONS',data.ID,'Tambah struktur jabatan '+position);}await saveDB();closeModal();showToast('Struktur organisasi berhasil disimpan.','success');renderOrganization();}catch(error){showToast(getErrorMessage(error),'error');}}
-async function deleteOrganization(id){
-  try{requirePerm('org.manage');const row=DB.ORGANIZATIONS.find(function(x){return x.ID===id;});if(!row)return;if(DB.ORGANIZATIONS.some(function(x){return x.PARENT_ID===id;})){showToast('Jabatan masih menjadi atasan jabatan lain.','warning');return;}if(!confirm('Hapus jabatan '+row.POSITION+'?'))return;DB.ORGANIZATIONS=DB.ORGANIZATIONS.filter(function(x){return x.ID!==id;});await audit('DELETE','ORGANIZATIONS',id,'Hapus struktur jabatan '+row.POSITION);await saveDB();renderOrganization();}catch(error){showToast(getErrorMessage(error),'error');}
-}
+async function saveOrganization(id){try{requirePerm('org.manage');const position=(getValue('o_POSITION')||'').trim();const name=(getValue('o_NAME')||'').trim();const unit=(getValue('o_UNIT')||'').trim();const parentId=getValue('o_PARENT_ID')||'';const userSelect=document.getElementById('o_USER_ID');const userIds=userSelect?Array.from(userSelect.selectedOptions).map(function(o){return o.value;}):[];const active=getValue('o_ACTIVE')||'TRUE';const description=(getValue('o_DESCRIPTION')||'').trim();if(!position||!unit){showToast('Jabatan dan unit/bagian wajib diisi.','warning');return;}if(parentId===id){showToast('Atasan tidak boleh sama dengan jabatan ini.','warning');return;}if(parentId){let cursor=parentId;let guard=0;while(cursor&&guard<100){if(cursor===id){showToast('Atasan tidak boleh berada di bawah jabatan ini karena akan membentuk struktur melingkar.','warning');return;}const parentRow=DB.ORGANIZATIONS.find(function(x){return x.ID===cursor;});cursor=parentRow?parentRow.PARENT_ID:'';guard++;}}const existing=id?DB.ORGANIZATIONS.find(function(x){return x.ID===id;}):null;if(id&&!existing){showToast('Jabatan tidak ditemukan.','error');return;}if(existing){const oldIds=Array.isArray(existing.USER_IDS)?existing.USER_IDS:(existing.USER_ID?[existing.USER_ID]:[]);oldIds.forEach(function(uid){const u=DB.USERS.find(function(x){return x.ID===uid;});if(u&&u.ORG_ID===id)u.ORG_ID='';});}const data={ID:id||uid('ORG'),POSITION:position,NAME:name,UNIT:unit,PARENT_ID:parentId,PARENT_NAME:'-',USER_ID:'',USER_IDS:[],USER_NAME:'',DESCRIPTION:description,ACTIVE:active,CREATED_AT:existing?existing.CREATED_AT:nowStr(),UPDATED_AT:nowStr()};if(id){const idx=DB.ORGANIZATIONS.findIndex(function(x){return x.ID===id;});DB.ORGANIZATIONS[idx]=data;}else{DB.ORGANIZATIONS.push(data);}userIds.forEach(function(uid){const u=DB.USERS.find(function(x){return x.ID===uid&&x.STATUS==='AKTIF';});if(u)u.ORG_ID=data.ID;});syncOrganizationsFromUsers();const parent=DB.ORGANIZATIONS.find(function(x){return x.ID===parentId;});data.PARENT_NAME=parent?parent.POSITION+' — '+(parent.NAME||'Belum diisi')+(parent.USER_NAME?' · '+parent.USER_NAME:''):'-';data.USER_IDS=DB.USERS.filter(function(u){return u.STATUS==='AKTIF'&&u.ORG_ID===data.ID;}).map(function(u){return u.ID;});data.USER_ID=data.USER_IDS[0]||'';data.USER_NAME=DB.USERS.filter(function(u){return data.USER_IDS.includes(u.ID);}).map(function(u){return u.NAME;}).join(', ');const idx=DB.ORGANIZATIONS.findIndex(function(x){return x.ID===data.ID;});DB.ORGANIZATIONS[idx]=data;await audit(id?'UPDATE':'CREATE','ORGANIZATIONS',data.ID,(id?'Update':'Tambah')+' struktur jabatan '+position+' dan sinkronisasi pengguna');await saveDB();closeModal();showToast('Struktur organisasi, pengguna, dan relasi jabatan berhasil disinkronkan.','success');renderOrganization();}catch(error){showToast(getErrorMessage(error),'error');}}
 function organizationDetail(row){
   openModal('Detail Struktur Organisasi','<div class="kv"><span>Jabatan</span><b>'+escapeHtml(row.POSITION)+'</b></div><div class="kv"><span>Nama</span><b>'+escapeHtml(row.NAME||'Belum diisi')+'</b></div><div class="kv"><span>Unit/Bagian</span><b>'+escapeHtml(row.UNIT)+'</b></div><div class="kv"><span>Atasan</span><b>'+escapeHtml(row.PARENT_NAME||'-')+'</b></div><div class="kv"><span>Penanggung Jawab</span><b>'+escapeHtml(row.USER_NAME||'-')+'</b></div><div class="kv"><span>Status</span><b>'+escapeHtml(row.ACTIVE==='TRUE'?'Aktif':'Nonaktif')+'</b></div><div class="card" style="margin-top:12px"><div class="card-title">Deskripsi</div><div>'+escapeHtml(row.DESCRIPTION||'-').replace(/\n/g,'<br>')+'</div></div>',['<button class="btn btn-primary" onclick="closeModal()">Tutup</button>']);
 }
@@ -6763,94 +6694,12 @@ async function financeDelete(id){
 /* =========================================================
    USERS
 ========================================================= */
-function renderUsers(){
-  const content = document.getElementById('content');
-  const rows = DB.USERS.map(sanitizeUser);
-  STATE.tableCache.USERS = rows;
-  content.innerHTML = `
-    <div class="page-title">👤 Pengguna</div>
-    <div class="page-subtitle">Manajemen akun pengguna.</div>
-    <div class="card">
-      <div class="toolbar">
-        <div class="toolbar-left"><input id="userSearch" class="search-box" placeholder="🔎 Cari pengguna..." oninput="filterUsers()"></div>
-        <div class="toolbar-right"><button class="btn btn-primary" onclick="userForm()">+ Tambah Pengguna</button><button class="btn btn-light" onclick="userImportForm()">📥 Import</button></div>
-      </div>
-      <div id="usersTable"></div>
-    </div>
-  `;
-  renderUsersTable(rows);
-}
-function filterUsers(){
-  const keyword = (document.getElementById('userSearch').value||'').toLowerCase();
-  renderUsersTable(STATE.tableCache.USERS.filter(r=>Object.values(r).join(' ').toLowerCase().includes(keyword)));
-}
-function renderUsersTable(rows){
-  document.getElementById('usersTable').innerHTML = renderTableHtml(rows,
-    [['NAME','Nama'],['USERNAME','Username'],['ROLE','Role'],['EMAIL','Email'],['STATUS','Status']],
-    function(row){
-      const isSelf = row.ID===STATE.currentUser.ID;
-      return `<button class="btn btn-light btn-sm" onclick='userForm(${safeJson(row)})'>✏️</button>
-        ${isSelf?'':`<button class="btn btn-danger btn-sm" onclick="userDelete('${row.ID}')">🗑️</button>`}`;
-    });
-}
-function userForm(row){
-  row = row || {};
-  openModal(row.ID?'Edit Pengguna':'Tambah Pengguna', `
-    <div class="form-grid">
-      <div><label>Nama *</label><input id="u_NAME" value="${escapeHtml(row.NAME||'')}"></div>
-      <div><label>Username *</label><input id="u_USERNAME" value="${escapeHtml(row.USERNAME||'')}"></div>
-      <div><label>Password</label><input id="u_PASSWORD" type="password" placeholder="${row.ID?'Kosongkan jika tidak diubah':'Masukkan password'}"></div>
-      <div><label>Role *</label><select id="u_ROLE_ID">${selectOptions(DB.ROLES,'ID','NAME',row.ROLE_ID)}</select></div>
-      <div><label>Email</label><input id="u_EMAIL" type="email" value="${escapeHtml(row.EMAIL||'')}"></div>
-      <div><label>Status</label><select id="u_STATUS">
-        <option value="AKTIF" ${row.STATUS==='AKTIF'?'selected':''}>Aktif</option>
-        <option value="NONAKTIF" ${row.STATUS==='NONAKTIF'?'selected':''}>Nonaktif</option>
-      </select></div>
-    </div>
-  `, [
-    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
-    `<button class="btn btn-primary" onclick="saveUserForm('${row.ID||''}')">💾 Simpan</button>`
-  ]);
-}
-async function saveUserForm(id){
-  try{
-    requirePerm('user.manage');
-    const name = getValue('u_NAME'), username = getValue('u_USERNAME'), password = getValue('u_PASSWORD'),
-      roleId = getValue('u_ROLE_ID'), email = getValue('u_EMAIL'), status = getValue('u_STATUS');
-    if(!name || !username || !roleId){ showToast('Nama, username, dan role wajib diisi.','warning'); return; }
-    const dup = DB.USERS.find(x=>x.USERNAME.toLowerCase()===username.toLowerCase() && x.ID!==id);
-    if(dup){ showToast('Username sudah digunakan.','warning'); return; }
-    const role = DB.ROLES.find(r=>r.ID===roleId);
-    if(id){
-      const idx = DB.USERS.findIndex(x=>x.ID===id);
-      DB.USERS[idx] = Object.assign({},DB.USERS[idx],{NAME:name,USERNAME:username,ROLE_ID:roleId,ROLE_CODE:role.CODE,EMAIL:email,STATUS:status});
-      if(password) DB.USERS[idx].PASSWORD_HASH = await sha256Hex(password);
-      await audit('UPDATE','USERS',id,'Update pengguna '+name);
-    }else{
-      const data = {ID:uid('USR'),NAME:name,USERNAME:username,ROLE_ID:roleId,ROLE_CODE:role.CODE,EMAIL:email,STATUS:status||'AKTIF',PHONE:'',CREATED_AT:nowStr()};
-      data.PASSWORD_HASH = await sha256Hex(password || 'sarpras123');
-      DB.USERS.push(data);
-      await audit('CREATE','USERS',data.ID,'Tambah pengguna '+name);
-    }
-    await saveDB();
-    closeModal();
-    showToast('Pengguna berhasil disimpan.','success');
-    renderUsers();
-  }catch(error){ showToast(getErrorMessage(error),'error'); }
-}
-async function userDelete(id){
-  try{
-    requirePerm('user.manage');
-    if(id===STATE.currentUser.ID){ showToast('Tidak dapat menghapus akun sendiri.','warning'); return; }
-    if(!confirm('Hapus pengguna ini?')) return;
-    DB.USERS = DB.USERS.filter(x=>x.ID!==id);
-    await audit('DELETE','USERS',id,'Hapus pengguna');
-    await saveDB();
-    showToast('Pengguna dihapus.','success');
-    renderUsers();
-  }catch(error){ showToast(getErrorMessage(error),'error'); }
-}
-
+function renderUsers(){const content=document.getElementById('content');const rows=DB.USERS.map(sanitizeUser);STATE.tableCache.USERS=rows;content.innerHTML=`<div class="page-title">👤 Pengguna</div><div class="page-subtitle">Akun pengguna terhubung dengan Role & Hak Akses serta Struktur Organisasi.</div><div class="card"><div class="toolbar"><div class="toolbar-left"><input id="userSearch" class="search-box" placeholder="🔎 Cari pengguna, role, jabatan..." oninput="filterUsers()"></div><div class="toolbar-right"><button class="btn btn-primary" onclick="userForm()">+ Tambah Pengguna</button><button class="btn btn-light" onclick="userImportForm()">📥 Import</button></div></div><div id="usersTable"></div></div>`;renderUsersTable(rows);}
+function filterUsers(){const keyword=(document.getElementById('userSearch').value||'').toLowerCase();renderUsersTable(STATE.tableCache.USERS.filter(function(r){return Object.values(r).join(' ').toLowerCase().includes(keyword);}));}
+function renderUsersTable(rows){document.getElementById('usersTable').innerHTML=renderTableHtml(rows,[['NAME','Nama'],['USERNAME','Username'],['ROLE','Role/Hak Akses'],['ORG_POSITION','Jabatan'],['ORG_UNIT','Unit/Bagian'],['STATUS','Status']],function(row){const isSelf=row.ID===STATE.currentUser.ID;return `<button class="btn btn-light btn-sm" onclick='userForm(${safeJson(row)})'>✏️</button> ${isSelf?'':`<button class="btn btn-danger btn-sm" onclick="userDelete('${row.ID}')">🗑️</button>`}`;});}
+function userForm(row){row=row||{};const roleId=row.ROLE_ID||'';const orgId=row.ORG_ID||'';openModal(row.ID?'Edit Pengguna':'Tambah Pengguna',`<div class="form-grid"><div><label>Nama *</label><input id="u_NAME" value="${escapeHtml(row.NAME||'')}"></div><div><label>Username *</label><input id="u_USERNAME" value="${escapeHtml(row.USERNAME||'')}"></div><div><label>Password</label><input id="u_PASSWORD" type="password" placeholder="${row.ID?'Kosongkan jika tidak diubah':'Masukkan password'}"></div><div><label>Role / Hak Akses *</label><select id="u_ROLE_ID">${selectOptions(DB.ROLES.filter(function(r){return r.ACTIVE!=='FALSE';}),'ID','NAME',roleId)}</select><div class="hint">Hak akses pengguna berasal dari Role yang dipilih.</div></div><div><label>Jabatan / Struktur Organisasi</label><select id="u_ORG_ID"><option value="">- Belum ditempatkan -</option>${(DB.ORGANIZATIONS||[]).filter(function(o){return o.ACTIVE!=='FALSE';}).map(function(o){return '<option value="'+escapeHtml(o.ID)+'" '+(o.ID===orgId?'selected':'')+'>'+escapeHtml(o.POSITION)+' — '+escapeHtml(o.NAME||'Belum diisi')+(o.UNIT?' · '+escapeHtml(o.UNIT):'')+'</option>';}).join('')}</select><div class="hint">Jabatan pengguna menjadi dasar struktur atasan, penugasan, dan verifikasi.</div></div><div><label>Email</label><input id="u_EMAIL" type="email" value="${escapeHtml(row.EMAIL||'')}"></div><div><label>Status</label><select id="u_STATUS"><option value="AKTIF" ${row.STATUS!=='NONAKTIF'?'selected':''}>Aktif</option><option value="NONAKTIF" ${row.STATUS==='NONAKTIF'?'selected':''}>Nonaktif</option></select></div></div>`,[`<button class="btn btn-light" onclick="closeModal()">Batal</button>`,`<button class="btn btn-primary" onclick="saveUserForm('${row.ID||''}')">💾 Simpan</button>`]);}
+async function saveUserForm(id){try{requirePerm('user.manage');const name=(getValue('u_NAME')||'').trim(),username=(getValue('u_USERNAME')||'').trim(),password=getValue('u_PASSWORD'),roleId=getValue('u_ROLE_ID'),email=getValue('u_EMAIL'),status=getValue('u_STATUS')||'AKTIF',orgId=getValue('u_ORG_ID')||'';if(!name||!username||!roleId){showToast('Nama, username, dan role wajib diisi.','warning');return;}const dup=DB.USERS.find(function(x){return x.USERNAME.toLowerCase()===username.toLowerCase()&&x.ID!==id;});if(dup){showToast('Username sudah digunakan.','warning');return;}const role=DB.ROLES.find(function(r){return r.ID===roleId;});if(!role){showToast('Role tidak ditemukan.','warning');return;}if(role.CODE==='ADMIN'&&!hasPermission(STATE.currentUser,'setting.manage')){showToast('Hanya pengguna dengan hak pengaturan yang dapat memberikan Role Administrator.','error');return;}if(id){const idx=DB.USERS.findIndex(function(x){return x.ID===id;});if(idx<0){showToast('Pengguna tidak ditemukan.','error');return;}DB.USERS[idx]=Object.assign({},DB.USERS[idx],{NAME:name,USERNAME:username,ROLE_ID:roleId,ROLE_CODE:role.CODE,EMAIL:email,STATUS:status,ORG_ID:orgId,UPDATED_AT:nowStr()});if(password)DB.USERS[idx].PASSWORD_HASH=await sha256Hex(password);syncUserOrganization(id,orgId);await audit('UPDATE','USERS',id,'Update pengguna '+name+' role '+role.NAME);}else{const data={ID:uid('USR'),NAME:name,USERNAME:username,PASSWORD_HASH:await sha256Hex(password||'sarpras123'),ROLE_ID:roleId,ROLE_CODE:role.CODE,EMAIL:email,PHONE:'',STATUS:status,ORG_ID:orgId,ORG_POSITION:'',ORG_NAME:'',ORG_UNIT:'',CREATED_AT:nowStr(),UPDATED_AT:nowStr()};DB.USERS.push(data);syncUserOrganization(data.ID,orgId);await audit('CREATE','USERS',data.ID,'Tambah pengguna '+name+' role '+role.NAME);}syncOrganizationsFromUsers();const current=DB.USERS.find(function(u){return u.ID===STATE.currentUser.ID;});if(current)STATE.currentUser=current;await saveDB();closeModal();showToast('Pengguna berhasil disimpan dan relasi Role–Struktur Organisasi diperbarui.','success');renderUsers();buildNavigation();}catch(error){showToast(getErrorMessage(error),'error');}}
+async function userDelete(id){try{requirePerm('user.manage');if(id===STATE.currentUser.ID){showToast('Tidak dapat menghapus akun sendiri.','warning');return;}if(!confirm('Hapus pengguna ini?'))return;syncUserOrganization(id,'');DB.USERS=DB.USERS.filter(function(x){return x.ID!==id;});syncOrganizationsFromUsers();await audit('DELETE','USERS',id,'Hapus pengguna dan relasi struktur organisasi');await saveDB();showToast('Pengguna dihapus dan relasi struktur organisasi dibersihkan.','success');renderUsers();}catch(error){showToast(getErrorMessage(error),'error');}}
 /* =========================================================
    IMPORT PENGGUNA (Excel)
 ========================================================= */
@@ -6910,14 +6759,12 @@ async function processUserImport(){
       const password = String(r['Password']||'').trim() || 'sarpras123';
       const statusRaw = String(r['Status (AKTIF/NONAKTIF)']||'AKTIF').trim().toUpperCase();
       const status = ['AKTIF','NONAKTIF'].includes(statusRaw) ? statusRaw : 'AKTIF';
-      DB.USERS.push({
-        ID:uid('USR'), NAME:name, USERNAME:username,
-        PASSWORD_HASH: await sha256Hex(password),
-        ROLE_ID:role.ID, ROLE_CODE:role.CODE, EMAIL:String(r['Email']||''), PHONE:'',
-        STATUS:status, CREATED_AT:nowStr()
-      });
+      const orgName = String(r['Jabatan']||'').trim();
+      const org = orgName ? DB.ORGANIZATIONS.find(function(o){return String(o.POSITION||'').toLowerCase()===orgName.toLowerCase()&&o.ACTIVE!=='FALSE';}) : null;
+      DB.USERS.push({ID:uid('USR'),NAME:name,USERNAME:username,PASSWORD_HASH:await sha256Hex(password),ROLE_ID:role.ID,ROLE_CODE:role.CODE,EMAIL:String(r['Email']||''),PHONE:'',STATUS:status,ORG_ID:org?org.ID:'',ORG_POSITION:org?org.POSITION:'',ORG_NAME:org?org.NAME||'':'',ORG_UNIT:org?org.UNIT||'':'',CREATED_AT:nowStr(),UPDATED_AT:nowStr()});
       success++;
     }
+    syncOrganizationsFromUsers();
     if(success>0){
       await audit('IMPORT','USERS','-','Import '+success+' pengguna dari Excel');
       await saveDB();
@@ -7073,8 +6920,12 @@ function renderApplicationSettings(){
         <div class="hint" style="margin-top:6px;margin-bottom:8px">💡 <b>Kebijakan biaya:</b> Booking ruangan & peminjaman barang oleh pengguna internal (login) untuk keperluan lembaga <b>selalu gratis</b>. Tarif di bawah ini hanya berlaku untuk booking oleh <b>Tamu</b> (menu Booking Tamu tanpa login).</div>
         <div style="margin-top:12px"><label>Default Harga Sewa Dasar Ruangan (Rp)</label><input id="s_DEFAULT_BASE_FEE" type="number" value="${escapeHtml(s.DEFAULT_BASE_FEE||0)}"></div>
         <div class="hint" style="margin-top:-8px;margin-bottom:8px">Dipakai jika suatu ruangan belum mempunyai tarif sewa sendiri.</div>
+         <div><label>Satuan Tarif Default Ruangan</label><select id="s_DEFAULT_RENTAL_UNIT"><option value="HARI" ${String(s.DEFAULT_RENTAL_UNIT||'HARI').toUpperCase()==='HARI'?'selected':''}>Per Hari</option><option value="JAM" ${String(s.DEFAULT_RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'selected':''}>Per Jam</option></select></div>
+         <div class="hint" style="margin-top:-8px;margin-bottom:8px">Dipakai sebagai satuan awal saat membuat ruangan baru. Tarif/satuan ruangan yang sudah tersimpan tetap mengikuti Master Ruangan.</div>
         <div><label>Default Harga Sewa Dasar Barang (Rp)</label><input id="s_DEFAULT_ASSET_BASE_FEE" type="number" value="${escapeHtml(s.DEFAULT_ASSET_BASE_FEE||0)}"></div>
         <div class="hint" style="margin-top:-8px;margin-bottom:8px">Dipakai sebagai referensi jika suatu barang belum mempunyai harga sewa/pinjam sendiri (atur di menu Semua Aset).</div>
+         <div><label>Satuan Tarif Default Barang</label><select id="s_DEFAULT_ASSET_RENTAL_UNIT"><option value="HARI" ${String(s.DEFAULT_ASSET_RENTAL_UNIT||'HARI').toUpperCase()==='HARI'?'selected':''}>Per Hari</option><option value="JAM" ${String(s.DEFAULT_ASSET_RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'selected':''}>Per Jam</option></select></div>
+         <div class="hint" style="margin-top:-8px;margin-bottom:8px">Dipakai sebagai satuan awal saat membuat atau import aset baru. Tarif/satuan aset yang sudah tersimpan tetap mengikuti Master Aset.</div>
         <div><label>Default Biaya Tambahan Fasilitas (Rp)</label><input id="s_DEFAULT_FACILITY_FEE" type="number" value="${escapeHtml(s.DEFAULT_FACILITY_FEE||0)}"></div>
         <div class="hint" style="margin-top:-8px">Fasilitas tambahan (AC, Sound System, dll) diatur per-aset di menu Semua Aset dengan menandai "Fasilitas Tambahan".</div>
         <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="saveModuleSettings()">💾 Simpan Modul & Biaya</button>
@@ -7109,6 +6960,8 @@ async function saveModuleSettings(){
     DB.APP_SETTINGS.DEFAULT_BASE_FEE = Number(getValue('s_DEFAULT_BASE_FEE'))||0;
     DB.APP_SETTINGS.DEFAULT_ASSET_BASE_FEE = Number(getValue('s_DEFAULT_ASSET_BASE_FEE'))||0;
     DB.APP_SETTINGS.DEFAULT_FACILITY_FEE = Number(getValue('s_DEFAULT_FACILITY_FEE'))||0;
+    DB.APP_SETTINGS.DEFAULT_RENTAL_UNIT = String(getValue('s_DEFAULT_RENTAL_UNIT')||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
+    DB.APP_SETTINGS.DEFAULT_ASSET_RENTAL_UNIT = String(getValue('s_DEFAULT_ASSET_RENTAL_UNIT')||'HARI').toUpperCase()==='JAM'?'JAM':'HARI';
     await audit('UPDATE','APP_SETTINGS','','Update modul aplikasi & biaya');
     await saveDB();
     buildNavigation();
