@@ -378,6 +378,8 @@ let OFFLINE_QUEUE=[];
 let SYNC_IN_PROGRESS=false;
 let SYNC_RETRY_TIMER=null;
 let SYNC_EVENTS_READY=false;
+let LOCAL_WRITE_IN_PROGRESS=false;
+let LAST_SERVER_UPDATE_AT=0;
 
 function loadOfflineQueue(){
   try{
@@ -505,12 +507,14 @@ async function setupFirebase(){
     firebaseApp=firebase.apps&&firebase.apps.length?firebase.app():firebase.initializeApp(FIREBASE_CONFIG);
     firebaseDb=firebase.firestore();
     firebaseDb.settings({experimentalForceLongPolling:true,merge:true});
+    try{await firebaseDb.enablePersistence({synchronizeTabs:true});}catch(e){console.warn('Firestore persistence tidak tersedia pada browser ini:',e);}
     await Promise.race([
       firebase.auth().signInAnonymously(),
       new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firebase auth timeout')),8000))
     ]);
     FIREBASE_READY=true;
     STORAGE_MODE='firebase';
+    startFirebaseSync();
     if(OFFLINE_QUEUE.length)await flushOfflineQueue();
   }catch(error){
     FIREBASE_READY=false;
@@ -526,11 +530,13 @@ function startFirebaseSync(){
     firebaseUnsub=null;
   }
   const ref=firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID);
-  firebaseUnsub=ref.onSnapshot(function(snap){
+  firebaseUnsub=ref.onSnapshot({includeMetadataChanges:true},function(snap){
     if(!snap.exists)return;
     const data=snap.data();
     const json=data&&data.json;
     if(!json)return;
+    const pending=snap.metadata&&snap.metadata.hasPendingWrites;
+    if(pending)return;
     if(OFFLINE_QUEUE.length){
       flushOfflineQueue();
       return;
@@ -540,6 +546,7 @@ function startFirebaseSync(){
       DB=JSON.parse(json);
       migrateDB();
       LAST_SYNCED_JSON=json;
+      LAST_SERVER_UPDATE_AT=Date.now();
       try{window.localStorage.setItem(DB_KEY,json);}catch(e){}
       const modalOpen=document.getElementById('modalBackdrop')&&!document.getElementById('modalBackdrop').classList.contains('hidden');
       if(STATE.currentUser&&!modalOpen&&document.getElementById('app')&&!document.getElementById('app').classList.contains('hidden')){
@@ -611,70 +618,28 @@ function hasLocalStorage(){
   }catch(e){ return false; }
 }
 function detectStorageMode(){
-  if(STORAGE_MODE==='firebase'&&FIREBASE_READY&&firebaseDb)return STORAGE_MODE;
-  if(STORAGE_MODE==='claude'&&hasClaudeStorage())return STORAGE_MODE;
-  if(STORAGE_MODE==='local'&&hasLocalStorage())return STORAGE_MODE;
-  if(FIREBASE_READY&&firebaseDb){
-    STORAGE_MODE='firebase';
-    return STORAGE_MODE;
-  }
-  if(hasClaudeStorage()){
-    STORAGE_MODE='claude';
-    return STORAGE_MODE;
-  }
-  if(hasLocalStorage()){
-    STORAGE_MODE='local';
-    return STORAGE_MODE;
-  }
-  STORAGE_MODE='memory';
+  if(FIREBASE_READY&&firebaseDb){STORAGE_MODE='firebase';return STORAGE_MODE;}
+  STORAGE_MODE='unavailable';
   return STORAGE_MODE;
 }
 async function storageGet(key){
-  const mode=detectStorageMode();
+  if(key===SESSION_KEY){
+    try{return window.localStorage.getItem(key);}catch(e){return null;}
+  }
+  if(!FIREBASE_READY||!firebaseDb)throw new Error('Firebase Firestore belum siap.');
   try{
-    if(mode==='firebase'){
-      if(key===SESSION_KEY){
-        try{return window.localStorage.getItem(key);}catch(e){return null;}
-      }
-      if(!firebaseDb)throw new Error('Firestore tidak tersedia.');
-      const snap=await Promise.race([
-        firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).get(),
-        new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore read timeout')),10000))
-      ]);
-      if(snap.exists&&snap.data()&&snap.data().json){
-        const json=snap.data().json;
-        LAST_SYNCED_JSON=json;
-        try{window.localStorage.setItem(key,json);}catch(e){}
-        return json;
-      }
-      try{return window.localStorage.getItem(key);}catch(e){return null;}
+    const ref=firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID);
+    const snap=await Promise.race([ref.get(),new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore read timeout')),10000))]);
+    if(snap.exists&&snap.data()&&snap.data().json){
+      const json=snap.data().json;
+      LAST_SYNCED_JSON=json;
+      try{window.localStorage.setItem(DB_KEY,json);}catch(e){}
+      return json;
     }
-    if(mode==='claude'){
-      const r=await window.storage.get(key,false);
-      return r?r.value:null;
-    }
-    if(mode==='local'){
-      return window.localStorage.getItem(key);
-    }
-    return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key)?MEMORY_FALLBACK[key]:null;
+    return null;
   }catch(error){
-    console.warn('storageGet gagal:',error);
-    if(mode==='firebase'){
-      FIREBASE_READY=false;
-      STORAGE_MODE=null;
-      scheduleOfflineSync();
-    }
-    try{
-      const value=window.localStorage.getItem(key);
-      if(value!==null)return value;
-    }catch(e){}
-    if(hasClaudeStorage()){
-      try{
-        const r=await window.storage.get(key,false);
-        if(r&&r.value!==undefined)return r.value;
-      }catch(e){}
-    }
-    return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key)?MEMORY_FALLBACK[key]:null;
+    console.error('Firestore read gagal:',error);
+    throw error;
   }
 }
 async function storageSet(key,value){
@@ -682,279 +647,32 @@ async function storageSet(key,value){
     try{window.localStorage.setItem(key,value);}catch(e){MEMORY_FALLBACK[key]=value;}
     return;
   }
-  const mode=detectStorageMode();
-  if(mode==='firebase'&&firebaseDb&&FIREBASE_READY){
-    try{
-      await Promise.race([
-        firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).set({
-          json:value,
-          updatedAt:firebase.firestore.FieldValue.serverTimestamp()
-        }),
-        new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore write timeout')),10000))
-      ]);
-      LAST_SYNCED_JSON=value;
-      try{window.localStorage.setItem(key,value);}catch(e){}
-      return;
-    }catch(error){
-      console.warn('Firestore write gagal, masuk antrean offline:',error);
-      FIREBASE_READY=false;
-      STORAGE_MODE=null;
-      queueOfflineSnapshot(value);
-      try{window.localStorage.setItem(key,value);}catch(e){MEMORY_FALLBACK[key]=value;}
-      scheduleOfflineSync();
-      return;
-    }
-  }
-  if(mode==='claude'){
-    try{
-      await window.storage.set(key,value,false);
-      return;
-    }catch(error){
-      console.warn('Claude storage gagal, menggunakan antrean lokal:',error);
-    }
-  }
-  if(mode==='local'){
-    try{
-      window.localStorage.setItem(key,value);
-      return;
-    }catch(error){}
-  }
+  if(!FIREBASE_READY||!firebaseDb)throw new Error('Firebase Firestore belum siap.');
+  const ref=firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID);
+  LOCAL_WRITE_IN_PROGRESS=true;
   try{
-    window.localStorage.setItem(key,value);
+    await Promise.race([
+      firebaseDb.runTransaction(async function(transaction){
+        const snap=await transaction.get(ref);
+        const remoteJson=snap.exists&&snap.data()&&snap.data().json?snap.data().json:'';
+        const baseJson=LAST_SYNCED_JSON||remoteJson||'';
+        const mergedJson=remoteJson&&baseJson&&remoteJson!==baseJson?mergeDBSnapshots(baseJson,value,remoteJson):value;
+        transaction.set(ref,{json:mergedJson,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+        LAST_SYNCED_JSON=mergedJson;
+        DB=parseJsonSafe(mergedJson,DB);
+        migrateDB();
+      }),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore write timeout')),10000))
+    ]);
+    try{window.localStorage.setItem(DB_KEY,LAST_SYNCED_JSON||value);}catch(e){}
   }catch(error){
-    MEMORY_FALLBACK[key]=value;
-  }
-  if(key===DB_KEY){
-    queueOfflineSnapshot(value);
-    scheduleOfflineSync();
+    console.error('Firestore write gagal:',error);
+    throw error;
+  }finally{
+    LOCAL_WRITE_IN_PROGRESS=false;
   }
 }
-/* =========================================================
-   STATE
-========================================================= */
-let DB = null;
-let SESSION_USERNAME = null;
-let STATE = {
-  currentUser:null,
-  currentRoute:'dashboard',
-  tableCache:{},
-  bookingTab:'ROOM',
-  bookingStatusFilter:'',
-  reportStatusFilter:'',
-  maintStatusFilter:'',
-  assetCart:[],
-  guestTab:'ROOM',
-  guestCart:[],
-  dutyRoleFilter:'',
-  dutyLogTypeFilter:''
-};
 
-/* =========================================================
-   SCHEMA / PERMISSIONS
-========================================================= */
-const PERMISSIONS = [
-  ['dashboard.view','Melihat Dashboard','dashboard'],
-  ['asset.view','Melihat Aset','asset'],
-  ['asset.manage','Mengelola Aset (tambah/ubah/hapus)','asset'],
-  ['asset_unit.view','Melihat Unit Inventaris','asset'],
-  ['asset_unit.manage','Mengelola Unit Inventaris','asset'],
-  ['room.view','Melihat Ruangan','room'],
-  ['room.manage','Mengelola Ruangan & Gedung','room'],
-  ['booking.view','Melihat Booking','booking'],
-  ['booking.create','Membuat Booking','booking'],
-  ['booking.approve','Menyetujui/Menolak Booking','booking'],
-  ['booking.cancel','Membatalkan Booking','booking'],
-  ['booking.checkout','Checkout & Pengembalian Barang (Scan Barcode)','booking'],
-  ['booking.delete','Menghapus Data Booking Permanen (Khusus Admin)','booking'],
-  ['stock.view','Melihat Stok Barang Habis Pakai','stock'],
-  ['stock.take','Mengajukan Pengambilan Barang Habis Pakai','stock'],
-  ['stock.approve','Menyetujui & Memproses Pengambilan Barang','stock'],
-  ['report.view','Melihat Laporan','report'],
-  ['report.create','Membuat Laporan','report'],
-  ['report.assign','Menugaskan Laporan','report'],
-  ['report.process','Memproses Laporan','report'],
-  ['report.close','Menutup Laporan','report'],
-  ['maintenance.view','Melihat Maintenance','maintenance'],
-  ['maintenance.create','Membuat Jadwal Maintenance','maintenance'],
-  ['maintenance.manage','Mengelola Maintenance','maintenance'],
-  ['user.manage','Mengelola Pengguna','user'],
-  ['setting.manage','Mengelola Pengaturan, Master Data & Role','setting'],
-  ['finance.manage','Mengelola Keuangan Sarpras (Khusus Admin)','finance'],
-  ['duty.view','Melihat Jadwal Piket','duty'],
-  ['duty.manage','Mengelola Jadwal Piket','duty'],
-  ['task.view','Melihat Tugas & Disposisi','task'],
-  ['task.create','Membuat Tugas & Disposisi','task'],
-  ['task.assign','Menugaskan Tugas','task'],
-  ['task.process','Memproses Tugas','task'],
-  ['task.verify','Memverifikasi Tugas','task'],
-  ['org.view','Melihat Struktur Organisasi','org'],
-  ['org.manage','Mengelola Struktur Organisasi','org'],
-  ['program.view','Melihat Program Kerja','program'],
-  ['program.manage','Mengelola Program Kerja','program'],
-  ['checklist.view','Melihat Checklist Harian','checklist'],
-  ['checklist.manage','Mengelola Checklist Harian','checklist'],
-  ['performance.view','Melihat Kinerja Operasional','performance'],
-  ['performance.report','Melihat Laporan Kinerja','performance'],
-  ['vehicle.manage','Mengelola Buku Tamu Kendaraan','vehicle'],
-  ['audit.view','Melihat Log Aktivitas','audit']
-];
-
-const DEFAULT_ROLES = [
-  {CODE:'ADMIN',NAME:'Administrator',DESCRIPTION:'Akses penuh ke seluruh modul.',ALL:true},
-  {CODE:'PENGELOLA',NAME:'Pengelola Sarpras',DESCRIPTION:'Mengelola operasional sarana & prasarana sehari-hari.',
-    PERMS:['dashboard.view','asset.view','asset.manage','asset_unit.view','asset_unit.manage','room.view','room.manage',
-      'booking.view','booking.approve','booking.cancel','booking.checkout','stock.view','stock.take','stock.approve','report.view','report.assign','report.close',
-      'maintenance.view','maintenance.create','maintenance.manage','audit.view','duty.manage','vehicle.manage','task.view','task.create','task.assign','task.verify','org.view','org.manage','program.view','program.manage','checklist.view','checklist.manage','performance.view','performance.report']},
-  {CODE:'DOSEN',NAME:'Dosen',DESCRIPTION:'Pengguna sivitas akademik — dosen.',
-    PERMS:['dashboard.view','room.view','booking.view','booking.create','stock.view','stock.take','report.view','report.create']},
-  {CODE:'MAHASISWA',NAME:'Mahasiswa',DESCRIPTION:'Pengguna sivitas akademik — mahasiswa.',
-    PERMS:['dashboard.view','room.view','booking.view','booking.create','stock.view','stock.take','report.view','report.create']},
-  {CODE:'PIMPINAN',NAME:'Pimpinan',DESCRIPTION:'Akses monitoring & dashboard tingkat pimpinan.',
-    PERMS:['dashboard.view','asset.view','room.view','booking.view','stock.view','report.view','maintenance.view','audit.view','org.view','task.view','program.view','checklist.view','performance.view','performance.report']},
-{CODE:'CLEANING',NAME:'Cleaning Service',DESCRIPTION:'Petugas kebersihan — membersihkan ruangan sesuai jadwal piket.',
-    PERMS:['dashboard.view','duty.view','task.view','task.process','checklist.view']},
-  {CODE:'OB',NAME:'Office Boy',DESCRIPTION:'Petugas OB — kontrol ATK & barang habis pakai di titik-titik perkantoran.',
-    PERMS:['dashboard.view','duty.view','task.view','task.process','checklist.view']},
-  {CODE:'SATPAM',NAME:'Satpam',DESCRIPTION:'Petugas keamanan — melihat jadwal piket sendiri & mengelola buku tamu kendaraan.',
-    PERMS:['dashboard.view','duty.view','vehicle.manage','task.view','task.process']},
-  {CODE:'PELAKSANA',NAME:'Pelaksana',DESCRIPTION:'Petugas pelaksana pekerjaan operasional kampus.',
-    PERMS:['dashboard.view','duty.view','task.view','task.process']}
-];
-const MENUS = [
-  {group:'',code:'dashboard',name:'Dashboard',icon:'📊',route:'dashboard',perm:'dashboard.view'},
-  {group:'',code:'my-vehicles',name:'Kendaraan Saya',icon:'🚘',route:'my-vehicles',perm:'dashboard.view'},
-  {group:'Inventaris',code:'assets',name:'Semua Aset',icon:'📦',route:'assets',perm:'asset.view'},
-  {group:'Inventaris',code:'asset-units',name:'Unit Inventaris',icon:'🏷️',route:'asset-units',perm:'asset_unit.view'},
-  {group:'Sarpras',code:'reports',name:'Laporan Kerusakan',icon:'⚠️',route:'reports',perm:'report.view',setting:'ENABLE_REPORT'},
-  {group:'Sarpras',code:'maintenance',name:'Maintenance',icon:'🔧',route:'maintenance',perm:'maintenance.view',setting:'ENABLE_MAINTENANCE'},
-  {group:'Sarpras',code:'duty-schedule',name:'Jadwal Piket',icon:'🧹',route:'duty-schedule',perm:'duty.view'},
-  {group:'Sarpras',code:'tasks',name:'Tugas & Disposisi',icon:'✅',route:'tasks',perm:'task.view'},
-  {group:'Sarpras',code:'programs',name:'Program Kerja',icon:'🗓️',route:'programs',perm:'program.view'},
-  {group:'Sarpras',code:'performance',name:'Kinerja Operasional',icon:'📈',route:'performance',perm:'performance.view'},
-  {group:'Sarpras',code:'performance-report',name:'Laporan Kinerja',icon:'📑',route:'performance-report',perm:'performance.report'},
-  {group:'Sarpras',code:'vehicle-log',name:'Buku Tamu Kendaraan',icon:'🚗',route:'vehicle-log',perm:'vehicle.manage'},
-  {group:'Sarpras',code:'duty-log',name:'Pelaksanaan Piket',icon:'📋',route:'duty-log',perm:'duty.view'},
-  {group:'Keuangan',code:'finance',name:'Keuangan Sarpras',icon:'💰',route:'finance',perm:'finance.manage'},
-  {group:'Booking',code:'booking-room',name:'Booking Ruangan',icon:'🏢',route:'booking-room',perm:'booking.view',setting:'ENABLE_BOOKING'},
-  {group:'Booking',code:'booking-asset',name:'Peminjaman Barang',icon:'📦',route:'booking-asset',perm:'booking.view',setting:'ENABLE_BOOKING'},
-    {group:'Booking',code:'booking-archive',name:'Arsip Booking',icon:'🗄️',route:'booking-archive',perm:'booking.delete'},
-  {group:'Booking',code:'stock-take',name:'Ambil Barang Habis Pakai',icon:'🧺',route:'stock-take',perm:'stock.view',setting:'ENABLE_STOCK'},
-  {group:'Master Data',code:'organization',name:'Struktur Organisasi',icon:'🏛️',route:'organization',perm:'org.view'},
-  {group:'Master Data',code:'master-units',name:'Unit / Fakultas',icon:'🏫',route:'master-units',perm:'setting.manage'},
-  {group:'Master Data',code:'master-buildings',name:'Gedung',icon:'🏢',route:'master-buildings',perm:'room.manage'},
-  {group:'Master Data',code:'master-rooms',name:'Ruangan',icon:'🚪',route:'master-rooms',perm:'room.manage'},
-  {group:'Master Data',code:'master-asset-categories',name:'Kategori Aset',icon:'🗂️',route:'master-asset-categories',perm:'setting.manage'},
-  {group:'Master Data',code:'master-asset-conditions',name:'Kondisi Aset',icon:'🩺',route:'master-asset-conditions',perm:'setting.manage'},
-  {group:'Master Data',code:'master-report-categories',name:'Kategori Laporan',icon:'📁',route:'master-report-categories',perm:'setting.manage',setting:'ENABLE_REPORT'},
-  {group:'Master Data',code:'master-maintenance-types',name:'Jenis Maintenance',icon:'🧰',route:'master-maintenance-types',perm:'setting.manage',setting:'ENABLE_MAINTENANCE'},
-  {group:'Pengaturan',code:'settings-application',name:'Aplikasi',icon:'⚙️',route:'settings-application',perm:'setting.manage'},
-  {group:'Pengaturan',code:'settings-users',name:'Pengguna',icon:'👤',route:'settings-users',perm:'user.manage'},
-  {group:'Pengaturan',code:'settings-roles',name:'Role & Hak Akses',icon:'🔐',route:'settings-roles',perm:'setting.manage'},
-  {group:'Pengaturan',code:'settings-reports',name:'Pengaturan Laporan',icon:'📊',route:'settings-reports',perm:'setting.manage'},
-  {group:'Pengaturan',code:'settings-audit',name:'Log Aktivitas',icon:'🧾',route:'settings-audit',perm:'audit.view'}
-];
-
-const ROUTE_TITLES = {};
-MENUS.forEach(m=>ROUTE_TITLES[m.route]=m.name);
-
-/* =========================================================
-   GENERIC TABLE CONFIG (drives generic CRUD pages)
-========================================================= */
-function TABLE_CONFIGS(){
-  return {
-
-    UNITS:{
-      title:'Unit / Fakultas', icon:'🏫', permManage:'setting.manage',
-      columns:[['CODE','Kode'],['NAME','Nama'],['DESCRIPTION','Deskripsi'],['ACTIVE','Status']],
-      fields:[
-        {key:'CODE',label:'Kode',required:true},
-        {key:'NAME',label:'Nama Unit/Fakultas',required:true},
-        {key:'DESCRIPTION',label:'Deskripsi',type:'textarea',full:true},
-        {key:'ACTIVE',label:'Status Aktif',type:'select',options:[['TRUE','Aktif'],['FALSE','Nonaktif']],default:'TRUE'}
-      ]
-    },
-
-    BUILDINGS:{
-      title:'Gedung', icon:'🏢', permManage:'room.manage',
-      columns:[['CODE','Kode'],['NAME','Nama'],['ADDRESS','Alamat'],['ACTIVE','Status']],
-      fields:[
-        {key:'CODE',label:'Kode Gedung',required:true},
-        {key:'NAME',label:'Nama Gedung',required:true},
-        {key:'ADDRESS',label:'Alamat',full:true},
-        {key:'DESCRIPTION',label:'Deskripsi',type:'textarea',full:true},
-        {key:'ACTIVE',label:'Status Aktif',type:'select',options:[['TRUE','Aktif'],['FALSE','Nonaktif']],default:'TRUE'}
-      ]
-    },
-
-    ROOMS:{
-      title:'Ruangan', icon:'🚪', permManage:'room.manage',
-      columns:[['CODE','Kode'],['NAME','Nama'],['BUILDING_ID','Gedung'],['FLOOR','Lantai'],['CAPACITY','Kapasitas'],['RENTAL_FEE','Tarif'],['RENTAL_UNIT','Satuan'],['CAN_BOOK','Booking'],['STATUS','Status']],
-      fields:[
-        {key:'CODE',label:'Kode Ruangan',required:true},
-        {key:'NAME',label:'Nama Ruangan',required:true},
-        {key:'BUILDING_ID',label:'Gedung',type:'select',ref:'BUILDINGS',required:true},
-        {key:'FLOOR',label:'Lantai',type:'number'},
-        {key:'CAPACITY',label:'Kapasitas (orang)',type:'number'},
-        {key:'RENTAL_FEE',label:'Tarif Sewa (Rp/pemakaian)',type:'number'},
-        {key:'RENTAL_UNIT',label:'Satuan Tarif',type:'select',options:[['HARI','Per Hari'],['JAM','Per Jam']],default:(DB.APP_SETTINGS&&DB.APP_SETTINGS.DEFAULT_RENTAL_UNIT)||'HARI'},
-        {key:'CAN_BOOK',label:'Bisa Dibooking',type:'select',options:[['TRUE','Bisa Dibooking'],['FALSE','Tidak Bisa Dibooking']],default:'TRUE'},
-        {key:'FACILITIES',label:'Fasilitas Fisik di Ruangan (info umum)',full:true,placeholder:'AC, Proyektor, Sound system, ... (sekadar info, bukan penentu biaya)'},
-        {key:'INCLUDED_FACILITIES',label:'Fasilitas yang SUDAH TERMASUK dalam Tarif Sewa',type:'textarea',full:true,placeholder:'Contoh: AC, Proyektor, Sound System sudah termasuk. Kosongkan jika sewa murni ruangan tanpa fasilitas apapun.'},
-        {key:'STATUS',label:'Status',type:'select',options:[['TERSEDIA','Tersedia'],['MAINTENANCE','Maintenance'],['NONAKTIF','Nonaktif']],default:'TERSEDIA'},
-        {key:'DESCRIPTION',label:'Deskripsi',type:'textarea',full:true}
-      ]
-    },
-
-    ASSET_CATEGORIES:{
-      title:'Kategori Aset', icon:'🗂️', permManage:'setting.manage',
-      columns:[['CODE','Kode'],['NAME','Nama'],['TYPE','Tipe'],['ACTIVE','Status']],
-      fields:[
-        {key:'CODE',label:'Kode',required:true},
-        {key:'NAME',label:'Nama Kategori',required:true},
-        {key:'TYPE',label:'Tipe',type:'select',options:[['ASET_TETAP','Aset Tetap'],['HABIS_PAKAI','Habis Pakai']],default:'ASET_TETAP'},
-        {key:'DESCRIPTION',label:'Deskripsi',type:'textarea',full:true},
-        {key:'ACTIVE',label:'Status Aktif',type:'select',options:[['TRUE','Aktif'],['FALSE','Nonaktif']],default:'TRUE'}
-      ]
-    },
-
-    ASSET_CONDITIONS:{
-      title:'Kondisi Aset', icon:'🩺', permManage:'setting.manage',
-      columns:[['CODE','Kode'],['NAME','Nama'],['COLOR','Warna'],['ACTIVE','Status']],
-      fields:[
-        {key:'CODE',label:'Kode',required:true},
-        {key:'NAME',label:'Nama Kondisi',required:true},
-        {key:'COLOR',label:'Warna',type:'color',default:'#16A34A'},
-        {key:'ACTIVE',label:'Status Aktif',type:'select',options:[['TRUE','Aktif'],['FALSE','Nonaktif']],default:'TRUE'}
-      ]
-    },
-
-    REPORT_CATEGORIES:{
-      title:'Kategori Laporan', icon:'📁', permManage:'setting.manage',
-      columns:[['CODE','Kode'],['NAME','Nama'],['ACTIVE','Status']],
-      fields:[
-        {key:'CODE',label:'Kode',required:true},
-        {key:'NAME',label:'Nama Kategori',required:true},
-        {key:'ACTIVE',label:'Status Aktif',type:'select',options:[['TRUE','Aktif'],['FALSE','Nonaktif']],default:'TRUE'}
-      ]
-    },
-
-    MAINTENANCE_TYPES:{
-      title:'Jenis Maintenance', icon:'🧰', permManage:'setting.manage',
-      columns:[['CODE','Kode'],['NAME','Nama'],['ACTIVE','Status']],
-      fields:[
-        {key:'CODE',label:'Kode',required:true},
-        {key:'NAME',label:'Nama Jenis',required:true},
-        {key:'DESCRIPTION',label:'Deskripsi',type:'textarea',full:true},
-        {key:'ACTIVE',label:'Status Aktif',type:'select',options:[['TRUE','Aktif'],['FALSE','Nonaktif']],default:'TRUE'}
-      ]
-    }
-
-  };
-}
-
-/* =========================================================
-   DEFAULT SEED DATA
-========================================================= */
 async function sha256Hex(text){
   const enc = new TextEncoder().encode(text);
   const buf = await crypto.subtle.digest('SHA-256',enc);
@@ -1105,11 +823,11 @@ REPORT_SETTINGS:{
    PERSISTENCE
 ========================================================= */
 async function loadDB(){
-  const raw = await storageGet(DB_KEY);
+  const raw=await storageGet(DB_KEY);
   if(raw){
-    try{ DB = JSON.parse(raw); migrateDB(); await saveDB(); return; }catch(e){ /* fallthrough to reseed */ }
+    try{DB=JSON.parse(raw);migrateDB();return;}catch(e){throw new Error('Data Firestore tidak valid: '+e.message);}
   }
-  DB = await buildDefaultDB();
+  DB=await buildDefaultDB();
   migrateDB();
   await saveDB();
 }
@@ -1690,7 +1408,6 @@ async function init(){
   await loadDB();
   await generateScheduledChecklists(todayStr());
   await expireOverdueInvoices();
-  if(FIREBASE_READY) startFirebaseSync();
   const sessionUser = await storageGet(SESSION_KEY);
   hideLoading();
   updateStorageFooter();
@@ -1742,13 +1459,8 @@ function updateStorageFooter(){
   const el = document.getElementById('storageFooter');
   if(!el) return;
   const mode = detectStorageMode();
-  const text = {
-    firebase:'SIM-SARPRAS · Terta Rapi dan Transparan',
-    claude:'SIM-SARPRAS · data tersimpan otomatis di penyimpanan Claude',
-    local:'SIM-SARPRAS · data tersimpan otomatis di browser ini (localStorage)',
-    memory:'SIM-SARPRAS · mode sesi sementara — data akan hilang saat halaman ditutup/dimuat ulang'
-  }[mode];
-  el.textContent = text;
+  const text={firebase:'SIM-SARPRAS · Firebase Firestore Realtime',unavailable:'SIM-SARPRAS · Firebase Firestore tidak tersedia'}[mode]||'SIM-SARPRAS · Firebase Firestore tidak tersedia';
+  el.textContent=text;
 }
 
 function showLogin(){
