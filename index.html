@@ -502,7 +502,7 @@ async function setupFirebase(){
     if(typeof firebase==='undefined')throw new Error('SDK Firebase tidak termuat.');
     firebaseApp=firebase.apps&&firebase.apps.length?firebase.app():firebase.initializeApp(FIREBASE_CONFIG);
     firebaseDb=firebase.firestore();
-    firebaseDb.settings({experimentalForceLongPolling:true,merge:true});
+    
     await Promise.race([
       firebase.auth().signInAnonymously(),
       new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firebase auth timeout')),15000))
