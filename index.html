@@ -495,31 +495,32 @@ function scheduleOfflineSync(){
   },15000);
 }
 async function setupFirebase(){
+  FIREBASE_READY=false;
+  STORAGE_MODE=null;
   try{
-    FIREBASE_READY=false;
-    STORAGE_MODE=null;
-    loadOfflineQueue();
     setupOfflineSyncEvents();
-    if(typeof firebase==='undefined'){
-      console.warn('SDK Firebase tidak termuat. Memakai penyimpanan lokal.');
-      scheduleOfflineSync();
-      return;
-    }
+    if(typeof firebase==='undefined')throw new Error('SDK Firebase tidak termuat.');
     firebaseApp=firebase.apps&&firebase.apps.length?firebase.app():firebase.initializeApp(FIREBASE_CONFIG);
     firebaseDb=firebase.firestore();
     firebaseDb.settings({experimentalForceLongPolling:true,merge:true});
     await Promise.race([
       firebase.auth().signInAnonymously(),
-      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firebase auth timeout')),8000))
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firebase auth timeout')),15000))
+    ]);
+    await Promise.race([
+      firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).get(),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore connection timeout')),15000))
     ]);
     FIREBASE_READY=true;
     STORAGE_MODE='firebase';
-    if(OFFLINE_QUEUE.length)await flushOfflineQueue();
+    startFirebaseSync();
+    return true;
   }catch(error){
     FIREBASE_READY=false;
     STORAGE_MODE=null;
-    console.warn('Firebase tidak tersedia. Menggunakan penyimpanan lokal:',error);
-    scheduleOfflineSync();
+    firebaseDb=null;
+    console.error('Firebase wajib tersedia tetapi gagal terhubung:',error);
+    throw new Error('Database Firebase tidak dapat dihubungkan. Periksa koneksi internet, Firebase Authentication Anonymous, Firestore Rules, dan konfigurasi project.');
   }
 }
 function startFirebaseSync(){
@@ -531,14 +532,9 @@ function startFirebaseSync(){
   const ref=firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID);
   firebaseUnsub=ref.onSnapshot(function(snap){
     if(!snap.exists)return;
-    const data=snap.data();
-    const json=data&&data.json;
-    if(!json)return;
-    if(OFFLINE_QUEUE.length){
-      flushOfflineQueue();
-      return;
-    }
-    if(json===LAST_SYNCED_JSON)return;
+    const data=snap.data()||{};
+    const json=data.json;
+    if(!json||json===LAST_SYNCED_JSON)return;
     try{
       DB=JSON.parse(json);
       migrateDB();
@@ -546,22 +542,22 @@ function startFirebaseSync(){
       try{window.localStorage.setItem(DB_KEY,json);}catch(e){}
       const modalOpen=document.getElementById('modalBackdrop')&&!document.getElementById('modalBackdrop').classList.contains('hidden');
       if(STATE.currentUser&&!modalOpen&&document.getElementById('app')&&!document.getElementById('app').classList.contains('hidden')){
+        const currentRoute=STATE.currentRoute;
         buildNavigation();
-        navigate(STATE.currentRoute);
+        navigate(currentRoute);
         showToast('🔄 Data diperbarui otomatis dari perangkat lain.','success');
       }
-    }catch(e){
-      console.warn('Gagal memproses pembaruan Firestore:',e);
+    }catch(error){
+      console.error('Gagal memproses pembaruan Firestore:',error);
     }
   },function(error){
-    console.warn('Koneksi realtime Firestore terputus:',error);
+    console.error('Koneksi realtime Firestore terputus:',error);
+    FIREBASE_READY=false;
+    STORAGE_MODE=null;
     if(firebaseUnsub){
       try{firebaseUnsub();}catch(e){}
       firebaseUnsub=null;
     }
-    FIREBASE_READY=false;
-    if(STORAGE_MODE==='firebase')STORAGE_MODE=null;
-    scheduleOfflineSync();
   });
 }
 async function flushOfflineQueue(){
@@ -614,122 +610,63 @@ function hasLocalStorage(){
   }catch(e){ return false; }
 }
 function detectStorageMode(){
-  if(STORAGE_MODE==='firebase'&&FIREBASE_READY&&firebaseDb)return STORAGE_MODE;
-  if(STORAGE_MODE==='claude'&&hasClaudeStorage())return STORAGE_MODE;
-  if(STORAGE_MODE==='local'&&hasLocalStorage())return STORAGE_MODE;
   if(FIREBASE_READY&&firebaseDb){
     STORAGE_MODE='firebase';
     return STORAGE_MODE;
   }
-  if(hasClaudeStorage()){
-    STORAGE_MODE='claude';
-    return STORAGE_MODE;
-  }
-  if(hasLocalStorage()){
-    STORAGE_MODE='local';
-    return STORAGE_MODE;
-  }
-  STORAGE_MODE='memory';
-  return STORAGE_MODE;
+  STORAGE_MODE=null;
+  return null;
 }
 async function storageGet(key){
-  const mode=detectStorageMode();
+  if(key===SESSION_KEY){
+    try{return window.localStorage.getItem(key);}catch(e){return null;}
+  }
+  if(!FIREBASE_READY||!firebaseDb)throw new Error('Koneksi database Firebase belum siap.');
   try{
-    if(mode==='firebase'){
-      if(key===SESSION_KEY){
-        try{return window.localStorage.getItem(key);}catch(e){return null;}
-      }
-      if(!firebaseDb)throw new Error('Firestore tidak tersedia.');
-      const snap=await Promise.race([
-        firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).get(),
-        new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore read timeout')),10000))
-      ]);
-      if(snap.exists&&snap.data()&&snap.data().json){
-        const json=snap.data().json;
-        LAST_SYNCED_JSON=json;
-        try{window.localStorage.setItem(key,json);}catch(e){}
-        return json;
-      }
-      try{return window.localStorage.getItem(key);}catch(e){return null;}
-    }
-    if(mode==='claude'){
-      const r=await window.storage.get(key,false);
-      return r?r.value:null;
-    }
-    if(mode==='local'){
-      return window.localStorage.getItem(key);
-    }
-    return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key)?MEMORY_FALLBACK[key]:null;
+    const snap=await Promise.race([
+      firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).get(),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore read timeout')),15000))
+    ]);
+    if(!snap.exists)return null;
+    const data=snap.data()||{};
+    const json=data.json;
+    if(!json)return null;
+    LAST_SYNCED_JSON=json;
+    try{window.localStorage.setItem(key,json);}catch(e){}
+    return json;
   }catch(error){
-    console.warn('storageGet gagal:',error);
-    if(mode==='firebase'){
-      FIREBASE_READY=false;
-      STORAGE_MODE=null;
-      scheduleOfflineSync();
-    }
-    try{
-      const value=window.localStorage.getItem(key);
-      if(value!==null)return value;
-    }catch(e){}
-    if(hasClaudeStorage()){
-      try{
-        const r=await window.storage.get(key,false);
-        if(r&&r.value!==undefined)return r.value;
-      }catch(e){}
-    }
-    return Object.prototype.hasOwnProperty.call(MEMORY_FALLBACK,key)?MEMORY_FALLBACK[key]:null;
+    console.error('storageGet Firebase gagal:',error);
+    throw error;
   }
 }
 async function storageSet(key,value){
   if(key===SESSION_KEY){
-    try{window.localStorage.setItem(key,value);}catch(e){MEMORY_FALLBACK[key]=value;}
+    try{
+      if(value)window.localStorage.setItem(key,value);
+      else window.localStorage.removeItem(key);
+    }catch(e){MEMORY_FALLBACK[key]=value;}
     return;
   }
-  const mode=detectStorageMode();
-  if(mode==='firebase'&&firebaseDb&&FIREBASE_READY){
-    try{
-      await Promise.race([
-        firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID).set({
-          json:value,
-          updatedAt:firebase.firestore.FieldValue.serverTimestamp()
-        }),
-        new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore write timeout')),10000))
-      ]);
-      LAST_SYNCED_JSON=value;
-      try{window.localStorage.setItem(key,value);}catch(e){}
-      return;
-    }catch(error){
-      console.warn('Firestore write gagal, masuk antrean offline:',error);
-      FIREBASE_READY=false;
-      STORAGE_MODE=null;
-      queueOfflineSnapshot(value);
-      try{window.localStorage.setItem(key,value);}catch(e){MEMORY_FALLBACK[key]=value;}
-      scheduleOfflineSync();
-      return;
-    }
-  }
-  if(mode==='claude'){
-    try{
-      await window.storage.set(key,value,false);
-      return;
-    }catch(error){
-      console.warn('Claude storage gagal, menggunakan antrean lokal:',error);
-    }
-  }
-  if(mode==='local'){
-    try{
-      window.localStorage.setItem(key,value);
-      return;
-    }catch(error){}
-  }
+  if(!FIREBASE_READY||!firebaseDb)throw new Error('Koneksi database Firebase belum siap. Data tidak disimpan lokal.');
   try{
-    window.localStorage.setItem(key,value);
+    const ref=firebaseDb.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC_ID);
+    await Promise.race([
+      firebaseDb.runTransaction(async function(transaction){
+        const snap=await transaction.get(ref);
+        const remoteJson=snap.exists&&snap.data()&&snap.data().json?snap.data().json:'';
+        const baseJson=LAST_SYNCED_JSON||'';
+        const mergedJson=remoteJson?mergeDBSnapshots(baseJson,value,remoteJson):value;
+        transaction.set(ref,{json:mergedJson,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+        LAST_SYNCED_JSON=mergedJson;
+        DB=parseJsonSafe(mergedJson,DB);
+        migrateDB();
+        try{window.localStorage.setItem(DB_KEY,mergedJson);}catch(e){}
+      }),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Firestore write timeout')),15000))
+    ]);
   }catch(error){
-    MEMORY_FALLBACK[key]=value;
-  }
-  if(key===DB_KEY){
-    queueOfflineSnapshot(value);
-    scheduleOfflineSync();
+    console.error('Firestore write gagal:',error);
+    throw error;
   }
 }
 /* =========================================================
@@ -1687,25 +1624,31 @@ async function audit(action,module,recordId,description){
    INIT
 ========================================================= */
 async function init(){
-  showLoading('Harap tunggu...');
-  await setupFirebase();
-  showLoading('Memuat aplikasi...');
-  await loadDB();
-  await generateScheduledChecklists(todayStr());
-  await expireOverdueInvoices();
-  if(FIREBASE_READY) startFirebaseSync();
-  const sessionUser = await storageGet(SESSION_KEY);
-  hideLoading();
-  updateStorageFooter();
-  if(sessionUser){
-    const u = DB.USERS.find(x=>x.ID===sessionUser);
-    if(u && String(u.STATUS).toUpperCase()==='AKTIF'){
-      STATE.currentUser = u;
-      showApplication();
-      return;
+  showLoading('Menghubungkan ke database...');
+  try{
+    await setupFirebase();
+    showLoading('Memuat data dari server...');
+    await loadDB();
+    await generateScheduledChecklists(todayStr());
+    await expireOverdueInvoices();
+    const sessionUser=await storageGet(SESSION_KEY);
+    hideLoading();
+    updateStorageFooter();
+    if(sessionUser){
+      const u=DB.USERS.find(x=>x.ID===sessionUser);
+      if(u&&String(u.STATUS).toUpperCase()==='AKTIF'){
+        STATE.currentUser=u;
+        showApplication();
+        return;
+      }
     }
+    showLogin();
+  }catch(error){
+    hideLoading();
+    updateStorageFooter();
+    showLogin();
+    showLoginError(error.message||'Database Firebase tidak dapat dihubungkan. Silakan periksa koneksi internet dan konfigurasi Firebase.');
   }
-  showLogin();
 }
 
 document.getElementById('loginForm').addEventListener('submit', async function(e){
@@ -1742,17 +1685,11 @@ async function doLogout(){
 }
 
 function updateStorageFooter(){
-  const el = document.getElementById('storageFooter');
-  if(!el) return;
-  const mode = detectStorageMode();
-  const text = {
-    firebase:'SIM-SARPRAS · Terta Rapi dan Transparan',
-    claude:'SIM-SARPRAS · data tersimpan otomatis di penyimpanan Claude',
-    local:'SIM-SARPRAS · data tersimpan otomatis di browser ini (localStorage)',
-    memory:'SIM-SARPRAS · mode sesi sementara — data akan hilang saat halaman ditutup/dimuat ulang'
-  }[mode];
-  el.textContent = text;
+  const el=document.getElementById('storageFooter');
+  if(!el)return;
+  el.textContent=FIREBASE_READY?'SIM-SARPRAS · Database Firebase realtime lintas perangkat':'SIM-SARPRAS · Database Firebase tidak terhubung';
 }
+
 
 function showLogin(){
   document.getElementById('loginPage').classList.remove('hidden');
