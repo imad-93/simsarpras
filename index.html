@@ -131,7 +131,10 @@ textarea{resize:vertical;min-height:90px}
 .tab.active{background:var(--secondary);color:#fff}
 
 /* TABLE */
-.table-wrapper{overflow-x:auto;border:1px solid var(--border);border-radius:11px}
+.table-wrapper{overflow:auto;max-height:480px;border:1px solid var(--border);border-radius:11px}
+.facility-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.facility-chip{display:flex;align-items:center;gap:6px;white-space:nowrap;background:#F5F6FB;border:1px solid var(--border);border-radius:999px;padding:7px 13px;font-size:12px;font-weight:600;color:#3A4258;cursor:pointer}
+.facility-chip input{width:auto;margin:0}
 table{width:100%;border-collapse:collapse}
 th,td{padding:11px 12px;border-bottom:1px solid var(--border);text-align:left;font-size:12px}
 th{background:#F8F9FC;color:#4B5468;font-weight:800;white-space:nowrap;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px}
@@ -5669,11 +5672,7 @@ BUKU TAMU KENDARAAN (khusus Satpam)
           </div>
         </div>
         
-        <!-- FIX: Bungkus elemen tabel dengan class .table-wrapper bawaan CSS Anda -->
-        <div class="table-wrapper">
-          <div id="vehicleLogTable"></div>
-        </div>
-        
+        <div id="vehicleLogTable"></div>
       </div>
     `;
     renderVehicleLogTable();
