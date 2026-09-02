@@ -1629,6 +1629,7 @@ async function init(){
     await setupFirebase();
     showLoading('Memuat data dari server...');
     await loadDB();
+    await autoCompleteExpiredRoomBookings();
     await generateScheduledChecklists(todayStr());
     await expireOverdueInvoices();
     const sessionUser=await storageGet(SESSION_KEY);
