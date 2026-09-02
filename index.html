@@ -1629,7 +1629,6 @@ async function init(){
     await setupFirebase();
     showLoading('Memuat data dari server...');
     await loadDB();
-    await autoCompleteExpiredRoomBookings();
     await generateScheduledChecklists(todayStr());
     await expireOverdueInvoices();
     const sessionUser=await storageGet(SESSION_KEY);
@@ -5834,7 +5833,23 @@ async function deleteOrganization(id){
 }
 function programStatusLabel(status){return {AKTIF:'🟢 Aktif',NONAKTIF:'⚪ Nonaktif'}[status]||status||'-';}
 function programShouldRunToday(row,date){if(row.STATUS!=='AKTIF')return false;const d=new Date(date+'T00:00:00');const created=String(row.CREATED_AT||'').substring(0,10);if(!created)return false;const c=new Date(created+'T00:00:00');if(row.FREQUENCY==='HARIAN')return true;if(row.FREQUENCY==='MINGGUAN')return d.getDay()===c.getDay();if(row.FREQUENCY==='BULANAN')return d.getDate()===c.getDate();return false;}
-async function generateScheduledChecklists(date){const today=date||todayStr();let changed=false;(DB.WORK_PROGRAMS||[]).filter(function(row){return programShouldRunToday(row,today);}).forEach(function(row){const exists=(DB.DUTY_LOGS||[]).some(function(x){return x.MODE==='PROGRAM'&&x.PROGRAM_ID===row.ID&&x.DATE===today;});if(exists)return;const tasks=String(row.TASKS_TEXT||'').split(/\r?\n/).map(function(x){return x.trim();}).filter(Boolean);if(!tasks.length)return;const assignee=DB.USERS.find(function(x){return x.ID===row.ASSIGNEE_ID;});const role=assignee?roleOf(assignee):null;const type=role&&role.CODE==='SATPAM'?'PATROLI':(role&&role.CODE==='OB'?'KONTROL_ATK':'KEBERSIHAN');DB.DUTY_LOGS.unshift({ID:uid('DLG'),MODE:'PROGRAM',PROGRAM_ID:row.ID,PROGRAM_NAME:row.NAME,TYPE:type,USER_ID:row.ASSIGNEE_ID,USER_NAME:row.ASSIGNEE_NAME,ROLE_TYPE:role?role.CODE:'',DATE:today,TIME:'',LOCATION_TYPE:'AREA',ROOM_ID:'',BUILDING_ID:'',LOCATION_NAME:row.AREA,LOCATION:row.AREA,CONDITION:'',NOTE:'',PHOTO_DATA:'',PHOTO_NAME:'',PHOTO_TYPE:'',IS_SCAN:'FALSE',IN_SCHEDULE:'',MATCHED_SCHEDULE_ID:'',DEVICE_INFO:'',GPS_LAT:'',GPS_LNG:'',GPS_MAP_LINK:'',STATUS:'BELUM_SELESAI',ITEMS:tasks.map(function(text){return {ID:uid('DLI'),TEXT:text,DONE:false,NOTE:''};}),CREATED_BY_ID:'SYSTEM',CREATED_BY_NAME:'Sistem',CREATED_AT:nowStr(),UPDATED_AT:nowStr()});row.LAST_GENERATED_DATE=today;changed=true;});if(changed){await audit('CREATE','DUTY_LOGS','','Pembuatan pelaksanaan piket program rutin otomatis '+today);await saveDB();}}
+async function generateScheduledChecklists(date){
+  const today=date||todayStr();
+  let changed=false;
+  const schedules=(DB.DUTY_SCHEDULES||[]).filter(function(x){return x.DATE===today;});
+  schedules.forEach(function(schedule){
+    const exists=(DB.DUTY_LOGS||[]).some(function(x){return x.MATCHED_SCHEDULE_ID===schedule.ID;});
+    if(exists)return;
+    const program=schedule.PROGRAM_ID?(DB.WORK_PROGRAMS||[]).find(function(x){return x.ID===schedule.PROGRAM_ID;}):null;
+    const tasks=program?String(program.TASKS_TEXT||'').split(/\r?\n/).map(function(x){return x.trim();}).filter(Boolean):['Pelaksanaan tugas piket sesuai jadwal'];
+    const assignee=DB.USERS.find(function(x){return x.ID===schedule.USER_ID;});
+    const role=assignee?roleOf(assignee):null;
+    const type=role&&role.CODE==='SATPAM'?'PATROLI':(role&&role.CODE==='OB'?'KONTROL_ATK':'KEBERSIHAN');
+    DB.DUTY_LOGS.unshift({ID:uid('DLG'),MODE:program?'PROGRAM':'SCHEDULE',PROGRAM_ID:program?program.ID:'',PROGRAM_NAME:program?program.NAME:'',TYPE:type,USER_ID:schedule.USER_ID,USER_NAME:schedule.USER_NAME,ROLE_TYPE:role?role.CODE:schedule.ROLE_TYPE,DATE:today,TIME:schedule.SHIFT_START||'',LOCATION_TYPE:schedule.LOCATION_TYPE,ROOM_ID:schedule.ROOM_ID||'',BUILDING_ID:schedule.BUILDING_ID||'',LOCATION_NAME:schedule.LOCATION_NAME||schedule.LOCATION||'',LOCATION:schedule.LOCATION||'',CONDITION:'',NOTE:schedule.NOTE||'',PHOTO_DATA:'',PHOTO_NAME:'',PHOTO_TYPE:'',IS_SCAN:'FALSE',IN_SCHEDULE:'TRUE',MATCHED_SCHEDULE_ID:schedule.ID,DEVICE_INFO:'',GPS_LAT:'',GPS_LNG:'',GPS_MAP_LINK:'',STATUS:'BELUM_SELESAI',ITEMS:tasks.map(function(text){return {ID:uid('DLI'),TEXT:text,DONE:false,NOTE:''};}),CREATED_BY_ID:'SYSTEM',CREATED_BY_NAME:'Sistem',CREATED_AT:nowStr(),UPDATED_AT:nowStr()});
+    changed=true;
+  });
+  if(changed){await audit('CREATE','DUTY_LOGS','','Pembuatan pelaksanaan piket berdasarkan jadwal '+today);await saveDB();}
+}
 function renderPrograms(){
   try{requirePerm('program.view');const can=hasPermission(STATE.currentUser,'program.manage');const rows=(DB.WORK_PROGRAMS||[]).slice();const content=document.getElementById('content');content.innerHTML='<div class="page-title">🗓️ Program Kerja</div><div class="page-subtitle">Template pekerjaan rutin yang dapat dijalankan menjadi pelaksanaan piket harian.</div><div class="card"><div class="toolbar"><div class="toolbar-left"><input id="programSearch" class="search-box" placeholder="🔎 Cari program..." oninput="renderProgramTable()"></div><div class="toolbar-right">'+(can?'<button class="btn btn-primary" onclick="programForm()">+ Tambah Program</button>':'')+'</div></div><div id="programTable"></div></div>';renderProgramTable();}catch(error){showToast(getErrorMessage(error),'error');}
 }
@@ -5849,7 +5864,26 @@ async function saveProgram(id){
 }
 function programDetail(row){openModal('Detail Program Kerja','<div class="kv"><span>Program</span><b>'+escapeHtml(row.NAME)+'</b></div><div class="kv"><span>Bagian</span><b>'+escapeHtml(row.AREA)+'</b></div><div class="kv"><span>Frekuensi</span><b>'+escapeHtml(row.FREQUENCY)+'</b></div><div class="kv"><span>Pelaksana</span><b>'+escapeHtml(row.ASSIGNEE_NAME)+'</b></div><div class="kv"><span>Status</span><b>'+escapeHtml(programStatusLabel(row.STATUS))+'</b></div><div class="card" style="margin-top:12px"><div class="card-title">Pekerjaan</div><div>'+escapeHtml(row.TASKS_TEXT||'-').replace(/\n/g,'<br>')+'</div></div>',['<button class="btn btn-primary" onclick="closeModal()">Tutup</button>']);}
 async function runProgram(id){
-  try{requirePerm('program.manage');const row=DB.WORK_PROGRAMS.find(function(x){return x.ID===id;});if(!row){showToast('Program tidak ditemukan.','error');return;}if(row.STATUS!=='AKTIF'){showToast('Program tidak aktif.','warning');return;}const today=todayStr();const exists=(DB.DUTY_LOGS||[]).some(function(x){return x.MODE==='PROGRAM'&&x.PROGRAM_ID===id&&x.DATE===today;})||(DB.CHECKLIST_LOGS||[]).some(function(x){return x.PROGRAM_ID===id&&x.DATE===today;});if(exists){showToast('Program ini sudah dijalankan untuk hari ini.','warning');return;}const tasks=String(row.TASKS_TEXT||'').split(/\r?\n/).map(function(x){return x.trim();}).filter(Boolean);if(!tasks.length){showToast('Program belum memiliki daftar pekerjaan.','warning');return;}const assignee=DB.USERS.find(function(x){return x.ID===row.ASSIGNEE_ID;});const role=assignee?roleOf(assignee):null;const type=role&&role.CODE==='SATPAM'?'PATROLI':(role&&role.CODE==='OB'?'KONTROL_ATK':'KEBERSIHAN');const log={ID:uid('DLG'),MODE:'PROGRAM',PROGRAM_ID:id,PROGRAM_NAME:row.NAME,TYPE:type,USER_ID:row.ASSIGNEE_ID,USER_NAME:row.ASSIGNEE_NAME,ROLE_TYPE:role?role.CODE:'',DATE:today,TIME:nowStr().substring(11,16),LOCATION_TYPE:'AREA',ROOM_ID:'',BUILDING_ID:'',LOCATION_NAME:row.AREA,LOCATION:row.AREA,CONDITION:'',NOTE:'',PHOTO_DATA:'',PHOTO_NAME:'',PHOTO_TYPE:'',IS_SCAN:'FALSE',IN_SCHEDULE:'',MATCHED_SCHEDULE_ID:'',DEVICE_INFO:'',GPS_LAT:'',GPS_LNG:'',GPS_MAP_LINK:'',STATUS:'BELUM_SELESAI',ITEMS:tasks.map(function(text){return {ID:uid('DLI'),TEXT:text,DONE:false,NOTE:''};}),CREATED_BY_ID:STATE.currentUser.ID,CREATED_AT:nowStr(),UPDATED_AT:nowStr()};DB.DUTY_LOGS.unshift(log);await audit('CREATE','DUTY_LOGS',log.ID,'Jalankan program '+row.NAME);await saveDB();showToast('Pelaksanaan piket berhasil dibuat.','success');navigate('duty-log');}catch(error){showToast(getErrorMessage(error),'error');}
+  try{
+    requirePerm('program.manage');
+    const row=DB.WORK_PROGRAMS.find(function(x){return x.ID===id;});
+    if(!row){showToast('Program tidak ditemukan.','error');return;}
+    if(row.STATUS!=='AKTIF'){showToast('Program tidak aktif.','warning');return;}
+    const today=todayStr();
+    const schedule=(DB.DUTY_SCHEDULES||[]).find(function(x){return x.PROGRAM_ID===id&&x.DATE===today&&x.USER_ID===row.ASSIGNEE_ID;});
+    if(!schedule){showToast('Program belum memiliki Jadwal Piket untuk hari ini. Buat jadwal terlebih dahulu agar pelaksanaan tercatat sesuai jadwal.','warning');return;}
+    const exists=(DB.DUTY_LOGS||[]).some(function(x){return x.MODE==='PROGRAM'&&x.PROGRAM_ID===id&&x.DATE===today&&x.MATCHED_SCHEDULE_ID===schedule.ID;});
+    if(exists){showToast('Pelaksanaan program ini untuk jadwal hari ini sudah dibuat.','warning');return;}
+    const tasks=String(row.TASKS_TEXT||'').split(/\r?\n/).map(function(x){return x.trim();}).filter(Boolean);
+    if(!tasks.length){showToast('Program belum memiliki daftar pekerjaan.','warning');return;}
+    const assignee=DB.USERS.find(function(x){return x.ID===schedule.USER_ID;});
+    const role=assignee?roleOf(assignee):null;
+    const type=role&&role.CODE==='SATPAM'?'PATROLI':(role&&role.CODE==='OB'?'KONTROL_ATK':'KEBERSIHAN');
+    const log={ID:uid('DLG'),MODE:'PROGRAM',PROGRAM_ID:id,PROGRAM_NAME:row.NAME,TYPE:type,USER_ID:schedule.USER_ID,USER_NAME:schedule.USER_NAME,ROLE_TYPE:role?role.CODE:schedule.ROLE_TYPE,DATE:today,TIME:nowStr().substring(11,16),LOCATION_TYPE:schedule.LOCATION_TYPE,ROOM_ID:schedule.ROOM_ID||'',BUILDING_ID:schedule.BUILDING_ID||'',LOCATION_NAME:schedule.LOCATION_NAME||schedule.LOCATION||row.AREA,LOCATION:schedule.LOCATION||row.AREA,CONDITION:'',NOTE:schedule.NOTE||'',PHOTO_DATA:'',PHOTO_NAME:'',PHOTO_TYPE:'',IS_SCAN:'FALSE',IN_SCHEDULE:'TRUE',MATCHED_SCHEDULE_ID:schedule.ID,DEVICE_INFO:'',GPS_LAT:'',GPS_LNG:'',GPS_MAP_LINK:'',STATUS:'BELUM_SELESAI',ITEMS:tasks.map(function(text){return {ID:uid('DLI'),TEXT:text,DONE:false,NOTE:''};}),CREATED_BY_ID:STATE.currentUser.ID,CREATED_AT:nowStr(),UPDATED_AT:nowStr()};
+    DB.DUTY_LOGS.unshift(log);
+    await audit('CREATE','DUTY_LOGS',log.ID,'Jalankan program '+row.NAME+' sesuai jadwal '+schedule.ID);
+    await saveDB();showToast('Pelaksanaan piket berhasil dibuat dan terhubung ke jadwal.','success');navigate('duty-log');
+  }catch(error){showToast(getErrorMessage(error),'error');}
 }
 function performancePeriodBounds(period){const today=new Date();const y=today.getFullYear(),m=today.getMonth()+1;if(period==='YEARLY')return {start:y+'-01-01',end:y+'-12-31',label:String(y)};if(period==='SEMESTER'){const first=m<=6?'01-01':'07-01',last=m<=6?'06-30':'12-31',semester=m<=6?'Semester 1':'Semester 2';return {start:y+'-'+first,end:y+'-'+last,label:semester+' '+y};}const start=new Date(y,m-1,1),end=new Date(y,m,0);return {start:y+'-'+String(m).padStart(2,'0')+'-01',end:y+'-'+String(m).padStart(2,'0')+'-'+String(end.getDate()).padStart(2,'0'),label:start.toLocaleDateString('id-ID',{month:'long',year:'numeric'})};}
 function getPerformanceReportData(start,end){const tasks=DB.DUTY_TASKS||[],reports=DB.REPORTS||[],maintenance=DB.MAINTENANCE||[],dutyLogs=DB.DUTY_LOGS||[],users=(DB.USERS||[]).filter(function(u){return u.STATUS==='AKTIF';});const inRange=function(value){const d=String(value||'').substring(0,10);return d&&d>=start&&d<=end;};const taskInRange=function(t){return inRange(t.CREATED_AT)||inRange(t.STARTED_AT)||inRange(t.SUBMITTED_AT)||inRange(t.VERIFIED_AT)||inRange(t.COMPLETED_AT);};const ts=tasks.filter(taskInRange),rs=reports.filter(function(r){return inRange(r.REPORTED_AT)||inRange(r.COMPLETED_AT)||inRange(r.UPDATED_AT);}),ms=maintenance.filter(function(m){return inRange(m.SCHEDULE_DATE)||inRange(m.COMPLETED_AT)||inRange(m.UPDATED_AT);}),dl=dutyLogs.filter(function(x){return inRange(x.DATE)||inRange(x.CREATED_AT)||inRange(x.UPDATED_AT);});const rows=users.map(function(u){const mine=ts.filter(function(t){return t.ASSIGNEE_ID===u.ID;}),done=mine.filter(function(t){return t.STATUS==='SELESAI'&&inRange(t.COMPLETED_AT||t.VERIFIED_AT);}),verified=mine.filter(function(t){return t.STATUS==='SELESAI'&&inRange(t.VERIFIED_AT);}),late=mine.filter(function(t){return taskIsOverdue(t,end);}),myDuty=dl.filter(function(x){return x.MODE==='PROGRAM'&&x.USER_ID===u.ID;}),myDutyDone=myDuty.filter(function(x){return x.STATUS==='SELESAI';});const completion=mine.length?Math.round(done.length/mine.length*100):0;const verification=mine.length?Math.round(verified.length/mine.length*100):0;const punctual=mine.length?Math.max(0,100-Math.round(late.length/mine.length*100)):100;const score=mine.length?Math.round(completion*.5+verification*.3+punctual*.2):0;return {ID:u.ID,NAME:u.NAME,ROLE:roleOf(u)?.NAME||u.ROLE_CODE,TASKS:mine.length,DONE:done.length,LATE:late.length,VERIFY:verified.length,PIKET:myDutyDone.length,SCORE:score};}).filter(function(r){return r.TASKS>0;}).sort(function(a,b){return b.SCORE-a.SCORE||b.DONE-a.DONE||a.NAME.localeCompare(b.NAME);});return {tasks:ts,reports:rs,maintenance:ms,dutyLogs:dl,rows:rows};}
@@ -6180,25 +6214,40 @@ function renderDutyTable(){
         <button class="btn btn-danger btn-sm" onclick="dutyDelete('${row.ID}')">🗑️</button>`;
     });
 }
-function dutyBulkForm(){  requirePerm('duty.manage');  openModal('📅 Generate Jadwal Mingguan', `    <div class="hint" style="margin-bottom:10px">Buat jadwal beberapa hari berturut-turut sekaligus (misal 1 minggu penuh) dengan petugas, jam, dan lokasi yang sama — tidak perlu input satu-satu tiap hari.</div>    <div class="form-grid">      <div><label>Jenis Petugas *</label><select id="db_ROLE_TYPE" onchange="onDutyBulkRoleTypeChange()">
-        <option value="CLEANING">🧹 Cleaning Service</option>
-        <option value="OB">📦 Office Boy</option>
-        <option value="SATPAM">🛡️ Satpam</option>
-      </select></div>
-      <div><label>Petugas *</label><select id="db_USER_ID"><option value="">— Memuat —</option></select></div>      
-      <div><label>Tanggal Mulai *</label><input id="db_START_DATE" type="date" value="${todayStr()}"></div>      
-      <div><label>Jumlah Hari *</label><input id="db_DAYS" type="number" min="1" max="31" value="7"></div>      
-      <div class="form-full" id="db_shift_wrap" style="display:none">        
-      <label>Shift (khusus Satpam)</label>        
-      <select id="db_SHIFT_PRESET" onchange="onDutyBulkShiftPresetChange()">          
-      <option value="">— Pilih Shift atau isi jam manual —</option>          
-      <option value="PAGI">Pagi (06:00–14:00)</option>          
-      <option value="SIANG">Siang (14:00–22:00)</option>          
-      <option value="MALAM">Malam (22:00–06:00)</option>        
-      </select>      
-      </div><div><label>Jam Mulai *</label><input id="db_SHIFT_START" type="time"></div>      
-      <div><label>Jam Selesai *</label><input id="db_SHIFT_END" type="time"></div>      
-      <div class="form-full">        <label>Jenis Lokasi</label>        <select id="db_LOCATION_TYPE" onchange="onDutyBulkLocationTypeChange()">          <option value="ALL_ROOMS">Semua Ruangan (Seluruh Gedung)</option>          <option value="ALL_ROOMS_BUILDING">Semua Ruangan di 1 Gedung</option>          <option value="ROOM">Ruangan Spesifik</option>          <option value="OTHER">Area Lain (bebas)</option>        </select>      </div>      <div class="form-full" id="db_room_wrap" style="display:none">        <label>Gedung</label>        <select id="db_BUILDING_SELECT" onchange="onDutyBulkBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select>        <label id="db_room_specific_label" style="margin-top:8px">Ruangan *</label>        <select id="db_ROOM_ID"><option value="">— Pilih Gedung dulu —</option></select></div>      <div class="form-full" id="db_other_wrap" style="display:none">        <label>Nama Lokasi *</label>        <input id="db_LOCATION_NAME" placeholder="Contoh: Pos Satpam Gerbang Utama, Area Parkir">      </div>      <div class="form-full"><label>Catatan</label><textarea id="db_NOTE"></textarea></div>    </div>  `,[    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,    `<button class="btn btn-primary" onclick="saveDutyBulk()">⚡ Generate Jadwal</button>`  ]);  setTimeout(function(){    onDutyBulkRoleTypeChange();    onDutyBulkLocationTypeChange();  },50);}
+function dutyBulkForm(){
+  requirePerm('duty.manage');
+  const programs=(DB.WORK_PROGRAMS||[]).filter(function(x){return x.STATUS==='AKTIF';});
+  openModal('📅 Generate Jadwal Mingguan', `
+    <div class="hint" style="margin-bottom:10px">Buat jadwal beberapa hari berturut-turut sekaligus. Jika memilih Program Kerja, semua jadwal akan terhubung ke program tersebut dan pelaksana mengikuti program.</div>
+    <div class="form-grid">
+      <div class="form-full"><label>Program Kerja</label><select id="db_PROGRAM_ID" onchange="onDutyBulkProgramChange()"><option value="">— Jadwal Manual / Tanpa Program —</option>${selectOptions(programs,'ID','NAME',null,true)}</select></div>
+      <div><label>Jenis Petugas *</label><select id="db_ROLE_TYPE" onchange="onDutyBulkRoleTypeChange()"><option value="CLEANING">🧹 Cleaning Service</option><option value="OB">📦 Office Boy</option><option value="SATPAM">🛡️ Satpam</option></select></div>
+      <div><label>Petugas *</label><select id="db_USER_ID"><option value="">— Memuat —</option></select></div>
+      <div><label>Tanggal Mulai *</label><input id="db_START_DATE" type="date" value="${todayStr()}"></div>
+      <div><label>Jumlah Hari *</label><input id="db_DAYS" type="number" min="1" max="31" value="7"></div>
+      <div class="form-full" id="db_shift_wrap" style="display:none"><label>Shift (khusus Satpam)</label><select id="db_SHIFT_PRESET" onchange="onDutyBulkShiftPresetChange()"><option value="">— Pilih Shift atau isi jam manual —</option><option value="PAGI">Pagi (06:00–14:00)</option><option value="SIANG">Siang (14:00–22:00)</option><option value="MALAM">Malam (22:00–06:00)</option></select></div>
+      <div><label>Jam Mulai *</label><input id="db_SHIFT_START" type="time"></div>
+      <div><label>Jam Selesai *</label><input id="db_SHIFT_END" type="time"></div>
+      <div class="form-full"><label>Jenis Lokasi</label><select id="db_LOCATION_TYPE" onchange="onDutyBulkLocationTypeChange()"><option value="ALL_ROOMS">Semua Ruangan (Seluruh Gedung)</option><option value="ALL_ROOMS_BUILDING">Semua Ruangan di 1 Gedung</option><option value="ROOM">Ruangan Spesifik</option><option value="OTHER">Area Lain (bebas)</option></select></div>
+      <div class="form-full" id="db_room_wrap" style="display:none"><label>Gedung</label><select id="db_BUILDING_SELECT" onchange="onDutyBulkBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select><label id="db_room_specific_label" style="margin-top:8px">Ruangan *</label><select id="db_ROOM_ID"><option value="">— Pilih Gedung dulu —</option></select></div>
+      <div class="form-full" id="db_other_wrap" style="display:none"><label>Nama Lokasi *</label><input id="db_LOCATION_NAME" placeholder="Contoh: Pos Satpam Gerbang Utama, Area Parkir"></div>
+      <div class="form-full"><label>Catatan</label><textarea id="db_NOTE"></textarea></div>
+    </div>
+  `,[`<button class="btn btn-light" onclick="closeModal()">Batal</button>`,`<button class="btn btn-primary" onclick="saveDutyBulk()">⚡ Generate Jadwal</button>`]);
+  setTimeout(function(){onDutyBulkRoleTypeChange();onDutyBulkLocationTypeChange();},50);
+}
+function onDutyBulkProgramChange(){
+  const programId=getValue('db_PROGRAM_ID');
+  const program=(DB.WORK_PROGRAMS||[]).find(function(x){return x.ID===programId;});
+  const roleSelect=document.getElementById('db_ROLE_TYPE');
+  const userSelect=document.getElementById('db_USER_ID');
+  if(!program){if(roleSelect)roleSelect.disabled=false;if(userSelect)userSelect.disabled=false;return;}
+  const user=DB.USERS.find(function(x){return x.ID===program.ASSIGNEE_ID&&x.STATUS==='AKTIF';});
+  const role=user?roleOf(user):null;
+  if(!user||!role){showToast('Pelaksana Program Kerja tidak aktif atau jabatannya tidak ditemukan.','warning');return;}
+  if(roleSelect){roleSelect.value=role.CODE;roleSelect.disabled=true;}
+  if(userSelect){userSelect.innerHTML=selectOptions([user],'ID','NAME',user.ID,true);userSelect.value=user.ID;userSelect.disabled=true;}
+}
 function onDutyBulkRoleTypeChange(){
   const type=getValue('db_ROLE_TYPE');
   const select=document.getElementById('db_USER_ID');
@@ -6212,13 +6261,52 @@ function onDutyBulkRoleTypeChange(){
 function onDutyBulkShiftPresetChange(){  const preset=getValue('db_SHIFT_PRESET');  const presets={PAGI:['06:00','14:00'],SIANG:['14:00','22:00'],MALAM:['22:00','06:00']};  if(presets[preset]){    document.getElementById('db_SHIFT_START').value=presets[preset][0];    document.getElementById('db_SHIFT_END').value=presets[preset][1];  }}
 function onDutyBulkLocationTypeChange(){  const type=getValue('db_LOCATION_TYPE');  const roomWrap=document.getElementById('db_room_wrap');  const otherWrap=document.getElementById('db_other_wrap');  const roomSelect=document.getElementById('db_ROOM_ID');  const roomLabel=document.getElementById('db_room_specific_label');  if(roomWrap) roomWrap.style.display = (type==='ROOM'||type==='ALL_ROOMS_BUILDING') ? '' : 'none';  if(otherWrap) otherWrap.style.display = type==='OTHER' ? '' : 'none';  if(roomSelect) roomSelect.style.display = type==='ROOM' ? '' : 'none';  if(roomLabel) roomLabel.style.display = type==='ROOM' ? '' : 'none';}
 function onDutyBulkBuildingChange(){  const buildingId=getValue('db_BUILDING_SELECT');  const roomSelect=document.getElementById('db_ROOM_ID');  if(!roomSelect)return;  const rooms=DB.ROOMS.filter(function(r){ return !buildingId||r.BUILDING_ID===buildingId; });  roomSelect.innerHTML = buildingId ? selectOptions(rooms,'ID','NAME',null,true) : '<option value="">— Pilih Gedung dulu —</option>';} 
-async function saveDutyBulk(){  try{    requirePerm('duty.manage');    const roleType=getValue('db_ROLE_TYPE');    const userId=getValue('db_USER_ID');    const startDate=getValue('db_START_DATE');    const days=Number(getValue('db_DAYS'))||0;    const shiftStart=getValue('db_SHIFT_START');    const shiftEnd=getValue('db_SHIFT_END');    const locationType=getValue('db_LOCATION_TYPE')||'ALL_ROOMS';    const note=getValue('db_NOTE');     if(!userId||!startDate||!shiftStart||!shiftEnd||days<1){      showToast('Petugas, tanggal mulai, jumlah hari, dan jam tugas wajib diisi.','warning');      return;    }    if(days>31){ showToast('Maksimal 31 hari sekali generate.','warning'); return; }     let location='', roomId='', buildingId='', locationName='';     if(locationType==='OTHER'){      locationName=getValue('db_LOCATION_NAME');      if(!locationName){ showToast('Nama lokasi wajib diisi.','warning'); return; }      location=locationName;    }else if(locationType==='ALL_ROOMS'){      location='Semua Ruangan (Seluruh Gedung)';    }else if(locationType==='ALL_ROOMS_BUILDING'){      buildingId=getValue('db_BUILDING_SELECT');      if(!buildingId){ showToast('Pilih gedung untuk cakupan seluruh ruangan.','warning'); return; }      location='Semua Ruangan - '+nameOf('BUILDINGS',buildingId);    }else{      roomId=getValue('db_ROOM_ID');      buildingId=getValue('db_BUILDING_SELECT');      if(!roomId){ showToast('Pilih ruangan tugas.','warning'); return; }      const room=DB.ROOMS.find(function(r){ return r.ID===roomId; });      location = room ? (room.NAME+' ('+nameOf('BUILDINGS',room.BUILDING_ID)+')') : '-';    }const user=DB.USERS.find(function(u){ return u.ID===userId; });    const startDateObj=new Date(startDate+'T00:00:00');    if(isNaN(startDateObj.getTime())){ showToast('Tanggal mulai tidak valid.','warning'); return; }     let created=0;    for(let i=0;i<days;i++){      const d=new Date(startDateObj);      d.setDate(d.getDate()+i);      const dateStr=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');       DB.DUTY_SCHEDULES.push({        ID:uid('DTY'),        ROLE_TYPE:roleType,        USER_ID:userId,        USER_NAME: user ? user.NAME : '-',        DATE:dateStr,        SHIFT_START:shiftStart,        SHIFT_END:shiftEnd,        LOCATION_TYPE:locationType,        ROOM_ID:roomId,        BUILDING_ID:buildingId,        LOCATION_NAME:locationName,        LOCATION:location,        NOTE:note,        CREATED_AT:nowStr()      });      created++;    }await audit('CREATE','DUTY_SCHEDULES','-','Generate '+created+' hari jadwal piket untuk '+(user?user.NAME:'-')+' di '+location);    await saveDB();    closeModal();    showToast(created+' hari jadwal piket berhasil dibuat sekaligus.','success');    renderDutySchedule();  }catch(error){    showToast(getErrorMessage(error),'error');  }} 
+async function saveDutyBulk(){
+  try{
+    requirePerm('duty.manage');
+    const programId=getValue('db_PROGRAM_ID');
+    const program=programId?(DB.WORK_PROGRAMS||[]).find(function(x){return x.ID===programId;}):null;
+    const roleType=getValue('db_ROLE_TYPE');
+    const userId=program?program.ASSIGNEE_ID:getValue('db_USER_ID');
+    const startDate=getValue('db_START_DATE');
+    const days=Number(getValue('db_DAYS'))||0;
+    const shiftStart=getValue('db_SHIFT_START');
+    const shiftEnd=getValue('db_SHIFT_END');
+    const locationType=getValue('db_LOCATION_TYPE')||'ALL_ROOMS';
+    const note=getValue('db_NOTE');
+    if(programId&&!program){showToast('Program Kerja tidak ditemukan atau sudah tidak aktif.','warning');return;}
+    if(!userId||!startDate||!shiftStart||!shiftEnd||days<1){showToast('Petugas, tanggal mulai, jumlah hari, dan jam tugas wajib diisi.','warning');return;}
+    if(days>31){showToast('Maksimal 31 hari sekali generate.','warning');return;}
+    let location='',roomId='',buildingId='',locationName='';
+    if(locationType==='OTHER'){locationName=getValue('db_LOCATION_NAME');if(!locationName){showToast('Nama lokasi wajib diisi.','warning');return;}location=locationName;}
+    else if(locationType==='ALL_ROOMS'){location='Semua Ruangan (Seluruh Gedung)';}
+    else if(locationType==='ALL_ROOMS_BUILDING'){buildingId=getValue('db_BUILDING_SELECT');if(!buildingId){showToast('Pilih gedung untuk cakupan seluruh ruangan.','warning');return;}location='Semua Ruangan - '+nameOf('BUILDINGS',buildingId);}
+    else{roomId=getValue('db_ROOM_ID');buildingId=getValue('db_BUILDING_SELECT');if(!roomId){showToast('Pilih ruangan tugas.','warning');return;}const room=DB.ROOMS.find(function(r){return r.ID===roomId;});location=room?(room.NAME+' ('+nameOf('BUILDINGS',room.BUILDING_ID)+')'):'-';}
+    const user=DB.USERS.find(function(u){return u.ID===userId;});
+    const role=roleOf(user);
+    const startDateObj=new Date(startDate+'T00:00:00');
+    if(isNaN(startDateObj.getTime())){showToast('Tanggal mulai tidak valid.','warning');return;}
+    let created=0;
+    for(let i=0;i<days;i++){
+      const d=new Date(startDateObj);d.setDate(d.getDate()+i);
+      const dateStr=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      const duplicate=(DB.DUTY_SCHEDULES||[]).some(function(x){return x.DATE===dateStr&&x.USER_ID===userId&&x.SHIFT_START===shiftStart&&x.SHIFT_END===shiftEnd&&x.PROGRAM_ID===(program?program.ID:'')&&x.LOCATION===location;});
+      if(duplicate)continue;
+      DB.DUTY_SCHEDULES.push({ID:uid('DTY'),PROGRAM_ID:program?program.ID:'',PROGRAM_NAME:program?program.NAME:'',ROLE_TYPE:program?(role?role.CODE:roleType):roleType,USER_ID:userId,USER_NAME:user?user.NAME:'-',DATE:dateStr,SHIFT_START:shiftStart,SHIFT_END:shiftEnd,LOCATION_TYPE:locationType,ROOM_ID:roomId,BUILDING_ID:buildingId,LOCATION_NAME:locationName,LOCATION:location,NOTE:note,CREATED_AT:nowStr()});
+      created++;
+    }
+    if(!created){showToast('Tidak ada jadwal baru yang dibuat karena jadwal yang sama sudah ada.','warning');return;}
+    await audit('CREATE','DUTY_SCHEDULES','-','Generate '+created+' hari jadwal piket untuk '+(user?user.NAME:'-')+' di '+location+(program?' dari program '+program.NAME:''));
+    await saveDB();closeModal();showToast(created+' hari jadwal piket berhasil dibuat.','success');renderDutySchedule();
+  }catch(error){showToast(getErrorMessage(error),'error');}
+}
 function dutyForm(row){
   requirePerm('duty.manage');
   row=row||{};
-
+  const programs=(DB.WORK_PROGRAMS||[]).filter(function(x){return x.STATUS==='AKTIF';});
   openModal(row.ID?'Edit Jadwal Piket':'Tambah Jadwal Piket', `
     <div class="form-grid">
+      <div class="form-full"><label>Program Kerja</label><select id="d_PROGRAM_ID" onchange="onDutyProgramChange()"><option value="">— Jadwal Manual / Tanpa Program —</option>${selectOptions(programs,'ID','NAME',row.PROGRAM_ID||null,true)}</select><div class="hint">Jika dipilih, jadwal ini menjadi turunan dari Program Kerja dan pelaksana akan mengikuti program.</div></div>
       <div><label>Jenis Petugas *</label><select id="d_ROLE_TYPE" onchange="onDutyRoleTypeChange()">
         <option value="CLEANING" ${row.ROLE_TYPE==='CLEANING'?'selected':''}>🧹 Cleaning Service</option>
         <option value="OB" ${row.ROLE_TYPE==='OB'?'selected':''}>📦 Office Boy</option>
@@ -6250,7 +6338,7 @@ function dutyForm(row){
       <div class="form-full" id="d_all_rooms_hint" style="display:none"><div class="hint">Petugas ini bertanggung jawab atas <b>seluruh ruangan di seluruh gedung</b> pada jadwal ini.</div></div>
       <div class="form-full" id="d_room_wrap">
         <label>Gedung</label>
-        <select id="d_BUILDING_SELECT" onchange="onDutyBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select>
+        <select id="d_BUILDING_SELECT" onchange="onDutyBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',row.BUILDING_ID||null,true)}</select>
         <label id="d_room_specific_label" style="margin-top:8px">Ruangan *</label>
         <select id="d_ROOM_ID"><option value="">— Pilih Gedung dulu —</option></select>
       </div>
@@ -6264,22 +6352,31 @@ function dutyForm(row){
     `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
     `<button class="btn btn-primary" onclick="saveDuty('${row.ID||''}')">💾 Simpan</button>`
   ]);
-
   setTimeout(function(){
-    onDutyRoleTypeChange();
-    const userSelect=document.getElementById('d_USER_ID');
-    if(userSelect && row.USER_ID) userSelect.value=row.USER_ID;
-
-    onDutyLocationTypeChange();
-    if((row.LOCATION_TYPE==='ROOM'||row.LOCATION_TYPE==='ALL_ROOMS_BUILDING') && row.BUILDING_ID){
-      document.getElementById('d_BUILDING_SELECT').value=row.BUILDING_ID;
-      onDutyBuildingChange();
-      const roomSelect=document.getElementById('d_ROOM_ID');
-      if(roomSelect) roomSelect.value=row.ROOM_ID||'';
+    const program=document.getElementById('d_PROGRAM_ID');
+    if(program)program.value=row.PROGRAM_ID||'';
+    if(row.PROGRAM_ID)onDutyProgramChange();
+    else{
+      onDutyRoleTypeChange();
+      const userSelect=document.getElementById('d_USER_ID');
+      if(userSelect&&row.USER_ID)userSelect.value=row.USER_ID;
     }
+    onDutyLocationTypeChange();
+    if((row.LOCATION_TYPE==='ROOM'||row.LOCATION_TYPE==='ALL_ROOMS_BUILDING')&&row.BUILDING_ID){document.getElementById('d_BUILDING_SELECT').value=row.BUILDING_ID;onDutyBuildingChange();const roomSelect=document.getElementById('d_ROOM_ID');if(roomSelect)roomSelect.value=row.ROOM_ID||'';}
   },50);
 }
-
+function onDutyProgramChange(){
+  const programId=getValue('d_PROGRAM_ID');
+  const program=(DB.WORK_PROGRAMS||[]).find(function(x){return x.ID===programId;});
+  const roleSelect=document.getElementById('d_ROLE_TYPE');
+  const userSelect=document.getElementById('d_USER_ID');
+  if(!program){if(roleSelect)roleSelect.disabled=false;if(userSelect)userSelect.disabled=false;return;}
+  const user=DB.USERS.find(function(x){return x.ID===program.ASSIGNEE_ID&&x.STATUS==='AKTIF';});
+  const role=user?roleOf(user):null;
+  if(!user||!role){showToast('Pelaksana Program Kerja tidak aktif atau jabatannya tidak ditemukan.','warning');return;}
+  if(roleSelect){roleSelect.value=role.CODE;roleSelect.disabled=true;}
+  if(userSelect){userSelect.innerHTML=selectOptions([user],'ID','NAME',user.ID,true);userSelect.value=user.ID;userSelect.disabled=true;}
+}
 function onDutyRoleTypeChange(){
   const type=getValue('d_ROLE_TYPE');
   const select=document.getElementById('d_USER_ID');
@@ -6300,7 +6397,33 @@ function onDutyBuildingChange(){
   roomSelect.innerHTML = buildingId ? selectOptions(rooms,'ID','NAME',null,true) : '<option value="">— Pilih Gedung dulu —</option>';
 }
 
-async function saveDuty(id){  try{    requirePerm('duty.manage');    const roleType=getValue('d_ROLE_TYPE');    const userId=getValue('d_USER_ID');    const date=getValue('d_DATE');    const shiftStart=getValue('d_SHIFT_START');    const shiftEnd=getValue('d_SHIFT_END');    const locationType=getValue('d_LOCATION_TYPE')||'ROOM';    const note=getValue('d_NOTE');     if(!userId||!date||!shiftStart||!shiftEnd){ showToast('Petugas, tanggal, dan jam tugas wajib diisi.','warning'); return; }     let location='', roomId='', buildingId='', locationName='';     if(locationType==='OTHER'){      locationName=getValue('d_LOCATION_NAME');      if(!locationName){ showToast('Nama lokasi wajib diisi.','warning'); return; }      location=locationName;    }else if(locationType==='ALL_ROOMS'){      location='Semua Ruangan (Seluruh Gedung)';    }else if(locationType==='ALL_ROOMS_BUILDING'){      buildingId=getValue('d_BUILDING_SELECT');      if(!buildingId){ showToast('Pilih gedung untuk cakupan seluruh ruangan.','warning'); return; }      location='Semua Ruangan - '+nameOf('BUILDINGS',buildingId);    }else{      roomId=getValue('d_ROOM_ID');      buildingId=getValue('d_BUILDING_SELECT');      if(!roomId){ showToast('Pilih ruangan tugas.','warning'); return; }      const room=DB.ROOMS.find(function(r){ return r.ID===roomId; });      location = room ? (room.NAME+' ('+nameOf('BUILDINGS',room.BUILDING_ID)+')') : '-';    }const user=DB.USERS.find(function(u){ return u.ID===userId; });    const existing = id ? DB.DUTY_SCHEDULES.find(function(x){ return x.ID===id; }) : null;     const data={      ID: id || uid('DTY'),      ROLE_TYPE:roleType,      USER_ID:userId,      USER_NAME: user ? user.NAME : '-',      DATE:date,      SHIFT_START:shiftStart,      SHIFT_END:shiftEnd,      LOCATION_TYPE:locationType,      ROOM_ID:roomId,      BUILDING_ID:buildingId,      LOCATION_NAME:locationName,      LOCATION:location,      NOTE:note,      CREATED_AT: existing ? existing.CREATED_AT : nowStr()    };     if(id){      const idx=DB.DUTY_SCHEDULES.findIndex(function(x){ return x.ID===id; });      if(idx<0){ showToast('Jadwal tidak ditemukan.','error'); return; }      DB.DUTY_SCHEDULES[idx]=data;      await audit('UPDATE','DUTY_SCHEDULES',id,'Update jadwal piket '+data.USER_NAME+' di '+location);    }else{      DB.DUTY_SCHEDULES.push(data);      await audit('CREATE','DUTY_SCHEDULES',data.ID,'Tambah jadwal piket '+data.USER_NAME+' di '+location);    }     await saveDB();    closeModal();    showToast('Jadwal piket berhasil disimpan.','success');    renderDutySchedule();  }catch(error){    showToast(getErrorMessage(error),'error');  }}
+async function saveDuty(id){
+  try{
+    requirePerm('duty.manage');
+    const programId=getValue('d_PROGRAM_ID');
+    const program=programId?(DB.WORK_PROGRAMS||[]).find(function(x){return x.ID===programId;}):null;
+    const roleType=getValue('d_ROLE_TYPE');
+    const userId=program?program.ASSIGNEE_ID:getValue('d_USER_ID');
+    const date=getValue('d_DATE');
+    const shiftStart=getValue('d_SHIFT_START');
+    const shiftEnd=getValue('d_SHIFT_END');
+    const locationType=getValue('d_LOCATION_TYPE')||'ROOM';
+    const note=getValue('d_NOTE');
+    if(programId&&!program){showToast('Program Kerja tidak ditemukan atau sudah tidak aktif.','warning');return;}
+    if(!userId||!date||!shiftStart||!shiftEnd){showToast('Petugas, tanggal, dan jam tugas wajib diisi.','warning');return;}
+    let location='',roomId='',buildingId='',locationName='';
+    if(locationType==='OTHER'){locationName=getValue('d_LOCATION_NAME');if(!locationName){showToast('Nama lokasi wajib diisi.','warning');return;}location=locationName;}
+    else if(locationType==='ALL_ROOMS'){location='Semua Ruangan (Seluruh Gedung)';}
+    else if(locationType==='ALL_ROOMS_BUILDING'){buildingId=getValue('d_BUILDING_SELECT');if(!buildingId){showToast('Pilih gedung untuk cakupan seluruh ruangan.','warning');return;}location='Semua Ruangan - '+nameOf('BUILDINGS',buildingId);}
+    else{roomId=getValue('d_ROOM_ID');buildingId=getValue('d_BUILDING_SELECT');if(!roomId){showToast('Pilih ruangan tugas.','warning');return;}const room=DB.ROOMS.find(function(r){return r.ID===roomId;});location=room?(room.NAME+' ('+nameOf('BUILDINGS',room.BUILDING_ID)+')'):'-';}
+    const user=DB.USERS.find(function(u){return u.ID===userId;});
+    const existing=id?DB.DUTY_SCHEDULES.find(function(x){return x.ID===id;}):null;
+    const data={ID:id||uid('DTY'),PROGRAM_ID:program?program.ID:'',PROGRAM_NAME:program?program.NAME:'',ROLE_TYPE:program?(roleOf(user)?.CODE||roleType):roleType,USER_ID:userId,USER_NAME:user?user.NAME:'-',DATE:date,SHIFT_START:shiftStart,SHIFT_END:shiftEnd,LOCATION_TYPE:locationType,ROOM_ID:roomId,BUILDING_ID:buildingId,LOCATION_NAME:locationName,LOCATION:location,NOTE:note,CREATED_AT:existing?existing.CREATED_AT:nowStr()};
+    if(id){const idx=DB.DUTY_SCHEDULES.findIndex(function(x){return x.ID===id;});if(idx<0){showToast('Jadwal tidak ditemukan.','error');return;}DB.DUTY_SCHEDULES[idx]=data;await audit('UPDATE','DUTY_SCHEDULES',id,'Update jadwal piket '+data.USER_NAME+' di '+location);}
+    else{DB.DUTY_SCHEDULES.push(data);await audit('CREATE','DUTY_SCHEDULES',data.ID,'Tambah jadwal piket '+data.USER_NAME+' di '+location+(program?' dari program '+program.NAME:''));}
+    await saveDB();closeModal();showToast('Jadwal piket berhasil disimpan.','success');renderDutySchedule();
+  }catch(error){showToast(getErrorMessage(error),'error');}
+}
 async function dutyDelete(id){
   try{
     requirePerm('duty.manage');
@@ -6322,7 +6445,7 @@ function renderDutyLog(){
     const content=document.getElementById('content');
 
     content.innerHTML=`
-      <div class="page-title">📋 Laporan Piket</div>
+      <div class="page-title">📋 Pelaksanaan Piket</div>
       <div class="page-subtitle">${canManage?'Riwayat pelaksanaan tugas Cleaning Service, Satpam, dan Kontrol ATK — lengkap dengan foto/bukti.':'Riwayat laporan tugas Anda.'}</div>
       <div class="card">
         <div class="tabs" id="dlTabs"></div>
@@ -6333,7 +6456,7 @@ function renderDutyLog(){
           </div>
           <div class="toolbar-right">
             <button class="btn btn-primary" onclick="scanDutyCheckpoint()">📷 Scan Lokasi</button>
-            <button class="btn btn-light" onclick="dutyLogForm()">+ Lapor Manual</button>
+            <button class="btn btn-light" onclick="dutyLogForm()">+ Pelaksanaan Manual</button>
           </div>
         </div>
         <div id="dlTable"></div>
