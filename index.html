@@ -1623,32 +1623,47 @@ async function audit(action,module,recordId,description){
 /* =========================================================
    INIT
 ========================================================= */
-async function init(){
-  showLoading('Menghubungkan ke database...');
-  try{
-    await setupFirebase();
-    showLoading('Memuat data dari server...');
-    await loadDB();
-    await generateScheduledChecklists(todayStr());
-    await expireOverdueInvoices();
-    const sessionUser=await storageGet(SESSION_KEY);
-    hideLoading();
-    updateStorageFooter();
-    if(sessionUser){
-      const u=DB.USERS.find(x=>x.ID===sessionUser);
-      if(u&&String(u.STATUS).toUpperCase()==='AKTIF'){
-        STATE.currentUser=u;
-        showApplication();
-        return;
-      }
-    }
-    showLogin();
-  }catch(error){
-    hideLoading();
-    updateStorageFooter();
-    showLogin();
-    showLoginError(error.message||'Database Firebase tidak dapat dihubungkan. Silakan periksa koneksi internet dan konfigurasi Firebase.');
+async function completeExpiredRoomBookings(){
+  if(!DB||!Array.isArray(DB.BOOKINGS))return;
+  const now=new Date();
+  const nowKey=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0')+'T'+String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+  let changed=false;
+  DB.BOOKINGS.forEach(function(booking){
+    if(booking.TYPE!=='ROOM'||!['MENUNGGU','DISETUJUI','DIAMBIL'].includes(booking.STATUS))return;
+    const endKey=String(booking.END_DATE||booking.DATE||'')+'T'+String(booking.END_TIME||'23:59');
+    if(!booking.DATE||nowKey<=endKey)return;
+    booking.STATUS='SELESAI';
+    booking.COMPLETED_AT=booking.COMPLETED_AT||nowStr();
+    booking.UPDATED_AT=nowStr();
+    changed=true;
+  });
+  if(changed){
+    await saveDB();
+    if(STATE.currentUser&&typeof renderBookingTable==='function')renderBookingTable();
+    if(STATE.currentRoute==='dashboard'&&typeof navigate==='function')navigate('dashboard');
   }
+}
+async function init(){
+  showLoading('Harap tunggu...');
+  await setupFirebase();
+  showLoading('Memuat aplikasi...');
+  await loadDB();
+  await completeExpiredRoomBookings();
+  await generateScheduledChecklists(todayStr());
+  await expireOverdueInvoices();
+  if(FIREBASE_READY) startFirebaseSync();
+  const sessionUser = await storageGet(SESSION_KEY);
+  hideLoading();
+  updateStorageFooter();
+  if(sessionUser){
+    const u = DB.USERS.find(x=>x.ID===sessionUser);
+    if(u && String(u.STATUS).toUpperCase()==='AKTIF'){
+      STATE.currentUser = u;
+      showApplication();
+      return;
+    }
+  }
+  showLogin();
 }
 
 document.getElementById('loginForm').addEventListener('submit', async function(e){
@@ -1685,11 +1700,17 @@ async function doLogout(){
 }
 
 function updateStorageFooter(){
-  const el=document.getElementById('storageFooter');
-  if(!el)return;
-  el.textContent=FIREBASE_READY?'SIM-SARPRAS · Database Firebase realtime lintas perangkat':'SIM-SARPRAS · Database Firebase tidak terhubung';
+  const el = document.getElementById('storageFooter');
+  if(!el) return;
+  const mode = detectStorageMode();
+  const text = {
+    firebase:'SIM-SARPRAS · Terta Rapi dan Transparan',
+    claude:'SIM-SARPRAS · data tersimpan otomatis di penyimpanan Claude',
+    local:'SIM-SARPRAS · data tersimpan otomatis di browser ini (localStorage)',
+    memory:'SIM-SARPRAS · mode sesi sementara — data akan hilang saat halaman ditutup/dimuat ulang'
+  }[mode];
+  el.textContent = text;
 }
-
 
 function showLogin(){
   document.getElementById('loginPage').classList.remove('hidden');
@@ -3147,101 +3168,63 @@ async function processUnitCheckout(unit,forcedBookingId){
   const bookingStartKey=function(b){return String(b.DATE||'9999-12-31')+'T'+String(b.START_TIME||'00:00');};
   const bookingEndKey=function(b){return String(b.END_DATE||b.DATE||'9999-12-31')+'T'+String(b.END_TIME||'23:59');};
   const scheduleActive=function(b){const start=bookingStartKey(b),end=bookingEndKey(b);return nowKey>=start&&nowKey<=end;};
-  if(String(unit.STATUS).toUpperCase()==='DIPINJAM'){
-    let booking=DB.BOOKINGS.find(function(b){
-      return b.TYPE==='ASSET'&&['DISETUJUI','DIAMBIL'].includes(b.STATUS)&&(b.ITEMS||[]).some(function(i){
-        return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).includes(unit.ID)&&!(i.RETURNED_UNIT_IDS||[]).includes(unit.ID);
-      });
+  const issuedBooking=DB.BOOKINGS.find(function(b){
+    return b.TYPE==='ASSET'&&['DISETUJUI','DIAMBIL'].includes(b.STATUS)&&(b.ITEMS||[]).some(function(i){
+      return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).includes(unit.ID)&&!(i.RETURNED_UNIT_IDS||[]).includes(unit.ID);
     });
-    if(!booking){
-      const recoveryCandidates=DB.BOOKINGS.filter(function(b){
-        if(b.TYPE!=='ASSET'||!['DISETUJUI','DIAMBIL'].includes(b.STATUS))return false;
-        if(nowKey<bookingStartKey(b))return false;
-        return (b.ITEMS||[]).some(function(i){
-          return i.ASSET_ID===unit.ASSET_ID&&!(i.RETURNED_UNIT_IDS||[]).includes(unit.ID);
-        });
-      }).sort(function(a,b){
-        return bookingScheduleKey(b).localeCompare(bookingScheduleKey(a))||String(b.CREATED_AT||'').localeCompare(String(a.CREATED_AT||''));
-      });
-      booking=recoveryCandidates[0]||null;
-      if(booking){
-        const recoveryItem=(booking.ITEMS||[]).find(function(i){return i.ASSET_ID===unit.ASSET_ID;});
-        if(recoveryItem){
-          recoveryItem.ISSUED_UNIT_IDS=recoveryItem.ISSUED_UNIT_IDS||[];
-          recoveryItem.RETURNED_UNIT_IDS=recoveryItem.RETURNED_UNIT_IDS||[];
-          if(!recoveryItem.ISSUED_UNIT_IDS.includes(unit.ID)&&recoveryItem.ISSUED_UNIT_IDS.length<Number(recoveryItem.QTY||0))recoveryItem.ISSUED_UNIT_IDS.push(unit.ID);
-        }
-      }
-    }
-    if(!booking){
-      if(resultEl)resultEl.innerHTML=`<div class="error">Unit ini berstatus dipinjam tetapi tidak ditemukan booking aktif yang cocok. Periksa Kode Booking atau data Unit Inventaris.</div>`;
-      showToast('Booking aktif tidak ditemukan untuk unit ini.','warning');
-      return;
-    }
-    const item=(booking.ITEMS||[]).find(function(i){return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).includes(unit.ID);});
-    if(!item){
-      if(resultEl)resultEl.innerHTML=`<div class="error">Unit ${escapeHtml(unit.INVENTORY_NUMBER||unit.ID)} berstatus dipinjam, tetapi hubungan unit dengan item booking tidak ditemukan.</div>`;
-      showToast('Item booking untuk unit ini tidak ditemukan.','error');
-      return;
-    }
+  });
+  if(issuedBooking){
+    const item=(issuedBooking.ITEMS||[]).find(function(i){return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).includes(unit.ID);});
+    if(!item){showToast('Item booking untuk unit ini tidak ditemukan.','error');return;}
     item.ISSUED_UNIT_IDS=item.ISSUED_UNIT_IDS||[];
     item.RETURNED_UNIT_IDS=item.RETURNED_UNIT_IDS||[];
-    if(item.RETURNED_UNIT_IDS.includes(unit.ID)){
-      showToast('Unit ini sudah dikembalikan.','warning');
-      return;
-    }
+    if(item.RETURNED_UNIT_IDS.includes(unit.ID)){showToast('Unit ini sudah dikembalikan.','warning');return;}
     item.RETURNED_UNIT_IDS.push(unit.ID);
     unit.STATUS='TERSEDIA';
-    const allReturned=(booking.ITEMS||[]).every(function(i){return (i.RETURNED_UNIT_IDS||[]).length>=Number(i.QTY||0);});
-    if(allReturned)booking.STATUS='SELESAI';
-    await audit('RETURN','CHECKOUT',unit.ID,'Pengembalian '+assetName+' ('+unit.INVENTORY_NUMBER+') oleh '+booking.USER_NAME+' — Kode Booking '+booking.ID);
+    const allReturned=(issuedBooking.ITEMS||[]).every(function(i){return (i.RETURNED_UNIT_IDS||[]).length>=Number(i.QTY||0);});
+    if(allReturned)issuedBooking.STATUS='SELESAI';
+    await audit('RETURN','CHECKOUT',unit.ID,'Pengembalian '+assetName+' ('+unit.INVENTORY_NUMBER+') oleh '+issuedBooking.USER_NAME+' — Kode Booking '+issuedBooking.ID);
     await saveDB();
-    if(resultEl)resultEl.innerHTML=`<div class="toast success" style="position:static">✅ Barang "<b>${escapeHtml(assetName)}</b>" (No. Inventaris: <b>${escapeHtml(unit.INVENTORY_NUMBER)}</b>) berhasil dikembalikan. Kode Booking: <b>${escapeHtml(booking.ID)}</b> · Peminjam: <b>${escapeHtml(booking.USER_NAME)}</b></div>`;
+    if(resultEl)resultEl.innerHTML=`<div class="toast success" style="position:static">✅ Barang "<b>${escapeHtml(assetName)}</b>" (No. Inventaris: <b>${escapeHtml(unit.INVENTORY_NUMBER)}</b>) berhasil dikembalikan. Kode Booking: <b>${escapeHtml(issuedBooking.ID)}</b> · Peminjam: <b>${escapeHtml(issuedBooking.USER_NAME)}</b></div>`;
     showToast('Barang dikembalikan.','success');
-    if(!forcedBookingId)renderCheckoutBookingPanel(booking.ID);
-  }else{
-    let booking=null;
-    if(forcedBookingId){
-      booking=DB.BOOKINGS.find(function(b){return b.ID===forcedBookingId;});
-      if(booking){
-        const okItem=(booking.ITEMS||[]).some(function(i){return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).length<Number(i.QTY||0);});
-        if(!okItem)booking=null;
-      }
-    }
-    if(!booking){
-      const candidates=DB.BOOKINGS.filter(function(b){
-        if(b.TYPE!=='ASSET'||b.STATUS!=='DISETUJUI')return false;
-        if(!scheduleActive(b))return false;
-        return (b.ITEMS||[]).some(function(i){return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).length<Number(i.QTY||0);});
-      });
-      booking=sortBookingsBySchedule(candidates)[0]||null;
-    }
-    if(!booking){
-      if(resultEl)resultEl.innerHTML=`<div class="error">Tidak ada booking yang disetujui untuk barang "${escapeHtml(assetName)}" pada waktu ${escapeHtml(nowKey.replace('T',' '))}.</div>`;
-      showToast('Tidak ada booking aktif disetujui untuk barang ini.','warning');
-      return;
-    }
-    const item=(booking.ITEMS||[]).find(function(i){return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).length<Number(i.QTY||0);});
-    if(!item){
-      showToast('Item booking tidak ditemukan.','error');
-      return;
-    }
-    item.ISSUED_UNIT_IDS=item.ISSUED_UNIT_IDS||[];
-    item.RETURNED_UNIT_IDS=item.RETURNED_UNIT_IDS||[];
-    if(item.ISSUED_UNIT_IDS.includes(unit.ID)){
-      showToast('Unit ini sudah dikeluarkan.','warning');
-      return;
-    }
-    item.ISSUED_UNIT_IDS.push(unit.ID);
-    unit.STATUS='DIPINJAM';
-    const allIssued=(booking.ITEMS||[]).every(function(i){return (i.ISSUED_UNIT_IDS||[]).length>=Number(i.QTY||0);});
-    if(allIssued)booking.STATUS='DIAMBIL';
-    await audit('ISSUE','CHECKOUT',unit.ID,'Barang keluar '+assetName+' ('+unit.INVENTORY_NUMBER+') untuk '+booking.USER_NAME+' — Kode Booking '+booking.ID+' (jadwal '+bookingScheduleKey(booking)+')');
-    await saveDB();
-    if(resultEl)resultEl.innerHTML=`<div class="toast success" style="position:static">📤 Barang "<b>${escapeHtml(assetName)}</b>" (No. Inventaris: <b>${escapeHtml(unit.INVENTORY_NUMBER)}</b>) berhasil dikeluarkan untuk <b>${escapeHtml(booking.USER_NAME)}</b>. Kode Booking: <b>${escapeHtml(booking.ID)}</b> (jadwal ${escapeHtml(booking.DATE||'')} ${escapeHtml(booking.START_TIME||'')})</div>`;
-    showToast('Barang dikeluarkan.','success');
-    if(!forcedBookingId)renderCheckoutBookingPanel(booking.ID);
+    if(!forcedBookingId)renderCheckoutBookingPanel(issuedBooking.ID);
+    return;
   }
+  let booking=null;
+  if(forcedBookingId){
+    booking=DB.BOOKINGS.find(function(b){return b.ID===forcedBookingId&&b.TYPE==='ASSET';});
+    if(booking){
+      const okItem=(booking.ITEMS||[]).some(function(i){return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).length<Number(i.QTY||0);});
+      if(!okItem)booking=null;
+    }
+  }
+  if(!booking){
+    const candidates=DB.BOOKINGS.filter(function(b){
+      if(b.TYPE!=='ASSET'||b.STATUS!=='DISETUJUI')return false;
+      if(!scheduleActive(b))return false;
+      return (b.ITEMS||[]).some(function(i){return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).length<Number(i.QTY||0);});
+    });
+    booking=sortBookingsBySchedule(candidates)[0]||null;
+  }
+  if(!booking){
+    if(resultEl)resultEl.innerHTML=`<div class="error">Tidak ada booking yang disetujui untuk barang "${escapeHtml(assetName)}" pada waktu ${escapeHtml(nowKey.replace('T',' '))}.</div>`;
+    showToast('Tidak ada booking aktif disetujui untuk barang ini.','warning');
+    return;
+  }
+  const item=(booking.ITEMS||[]).find(function(i){return i.ASSET_ID===unit.ASSET_ID&&(i.ISSUED_UNIT_IDS||[]).length<Number(i.QTY||0);});
+  if(!item){showToast('Item booking tidak ditemukan.','error');return;}
+  item.ISSUED_UNIT_IDS=item.ISSUED_UNIT_IDS||[];
+  item.RETURNED_UNIT_IDS=item.RETURNED_UNIT_IDS||[];
+  if(item.ISSUED_UNIT_IDS.includes(unit.ID)){showToast('Unit ini sudah dikeluarkan.','warning');return;}
+  item.ISSUED_UNIT_IDS.push(unit.ID);
+  unit.STATUS='DIPINJAM';
+  const allIssued=(booking.ITEMS||[]).every(function(i){return (i.ISSUED_UNIT_IDS||[]).length>=Number(i.QTY||0);});
+  if(allIssued)booking.STATUS='DIAMBIL';
+  await audit('ISSUE','CHECKOUT',unit.ID,'Barang keluar '+assetName+' ('+unit.INVENTORY_NUMBER+') untuk '+booking.USER_NAME+' — Kode Booking '+booking.ID+' (jadwal '+bookingScheduleKey(booking)+')');
+  await saveDB();
+  if(resultEl)resultEl.innerHTML=`<div class="toast success" style="position:static">📤 Barang "<b>${escapeHtml(assetName)}</b>" (No. Inventaris: <b>${escapeHtml(unit.INVENTORY_NUMBER)}</b>) berhasil dikeluarkan untuk <b>${escapeHtml(booking.USER_NAME)}</b>. Kode Booking: <b>${escapeHtml(booking.ID)}</b> (jadwal ${escapeHtml(booking.DATE||'')} ${escapeHtml(booking.START_TIME||'')})</div>`;
+  showToast('Barang dikeluarkan.','success');
+  if(!forcedBookingId)renderCheckoutBookingPanel(booking.ID);
 }
 
 // Panel detail saat petugas memasukkan Kode Booking: menampilkan semua barang
@@ -3305,39 +3288,32 @@ async function checkoutReturnUnitById(unitId){
 // Dipanggil dari panel Kode Booking untuk mengeluarkan 1 unit berikutnya yang
 // tersedia bagi item tertentu pada booking tersebut (dipilih manual via kode
 // booking, sehingga tidak bergantung pada urutan FIFO barcode).
-function findAvailableAssetUnit(assetId){
-  const units=(DB.ASSET_UNITS||[]).filter(function(u){return u.ASSET_ID===assetId;});
-  const available=units.find(function(u){return String(u.STATUS||'').toUpperCase()==='TERSEDIA';});
-  if(available)return available;
-  if(units.length)return null;
-  const asset=DB.ASSETS.find(function(a){return a.ID===assetId;});
-  if(!asset)return null;
-  if(!DB.SEQ)DB.SEQ={};
-  if(DB.SEQ.ASSET_UNITS===undefined)DB.SEQ.ASSET_UNITS=0;
-  DB.SEQ.ASSET_UNITS++;
-  const condition=DB.ASSET_CONDITIONS&&DB.ASSET_CONDITIONS[0]?DB.ASSET_CONDITIONS[0].ID:'';
-  const unit={ID:uid('AUN'),ASSET_ID:assetId,INVENTORY_NUMBER:'INV-'+new Date().getFullYear()+'-'+String(DB.SEQ.ASSET_UNITS).padStart(5,'0'),CONDITION_ID:condition,BUILDING_ID:'',ROOM_ID:'',RESPONSIBLE_USER_ID:'',STATUS:'TERSEDIA',NOTE:'Unit dibuat otomatis saat proses pengambilan barang karena aset belum memiliki unit inventaris.',RENTAL_FEE:Number(asset.RENTAL_FEE)||0,RENTAL_UNIT:String(asset.RENTAL_UNIT||'HARI').toUpperCase()==='JAM'?'JAM':'HARI',CREATED_AT:nowStr()};
-  DB.ASSET_UNITS.push(unit);
-  return unit;
-}
 async function issueNextUnitForBooking(bookingId,assetId){
   try{
     requirePerm('booking.checkout');
-    const booking=DB.BOOKINGS.find(function(b){return b.ID===bookingId;});
+    const booking=DB.BOOKINGS.find(b=>b.ID===bookingId);
     if(!booking){showToast('Booking tidak ditemukan.','error');return;}
     if(booking.STATUS!=='DISETUJUI'&&booking.STATUS!=='DIAMBIL'){showToast('Booking ini belum/tidak berstatus disetujui.','warning');return;}
-    const item=(booking.ITEMS||[]).find(function(i){return i.ASSET_ID===assetId;});
+    const item=(booking.ITEMS||[]).find(i=>i.ASSET_ID===assetId);
     if(!item){showToast('Item booking tidak ditemukan.','error');return;}
     item.ISSUED_UNIT_IDS=item.ISSUED_UNIT_IDS||[];
     item.RETURNED_UNIT_IDS=item.RETURNED_UNIT_IDS||[];
     if(item.ISSUED_UNIT_IDS.length>=Number(item.QTY||0)){showToast('Semua unit untuk barang ini sudah dikeluarkan.','warning');return;}
-    const unit=findAvailableAssetUnit(assetId);
-    if(!unit){
-      const units=(DB.ASSET_UNITS||[]).filter(function(u){return u.ASSET_ID===assetId;});
-      const statuses=Array.from(new Set(units.map(function(u){return String(u.STATUS||'').toUpperCase()||'TIDAK DIKETAHUI';})));
-      showToast('Tidak ada unit tersedia untuk barang "'+item.ASSET_NAME+'". Status unit saat ini: '+statuses.join(', ')+'.','error');
-      return;
-    }
+    const assignedElsewhere=function(unit){
+      return DB.BOOKINGS.some(function(b){
+        if(b.TYPE!=='ASSET'||b.ID===bookingId)return false;
+        return (b.ITEMS||[]).some(function(i){return i.ASSET_ID===assetId&&(i.ISSUED_UNIT_IDS||[]).includes(unit.ID)&&!(i.RETURNED_UNIT_IDS||[]).includes(unit.ID);});
+      });
+    };
+    const unit=DB.ASSET_UNITS.find(function(u){
+      if(u.ASSET_ID!==assetId)return false;
+      const status=String(u.STATUS||'').toUpperCase();
+      if(['MAINTENANCE','RUSAK'].includes(status))return false;
+      if(item.ISSUED_UNIT_IDS.includes(u.ID)||item.RETURNED_UNIT_IDS.includes(u.ID))return false;
+      if(assignedElsewhere(u))return false;
+      return status==='TERSEDIA'||status==='DIPINJAM';
+    });
+    if(!unit){showToast('Tidak ada unit yang dapat dikeluarkan untuk barang "'+item.ASSET_NAME+'" pada booking ini.','error');return;}
     await processUnitCheckout(unit,bookingId);
     renderCheckoutHistory();
     renderBookingTable();
@@ -3897,27 +3873,6 @@ function(row){
 });} 
 async function restoreBooking(id){  try{    requirePerm('booking.delete');    const booking=DB.BOOKINGS.find(function(b){ return b.ID===id; });    if(!booking){ showToast('Data tidak ditemukan.','error'); return; }    booking.ARCHIVED='FALSE';    booking.ARCHIVED_AT='';    booking.ARCHIVED_BY='';    await audit('RESTORE','BOOKINGS',id,'Pulihkan data booking dari arsip: '+booking.ITEM_NAME);    await saveDB();    showToast('Data booking berhasil dipulihkan.','success');    renderBookingArchiveTable();  }catch(error){ showToast(getErrorMessage(error),'error'); }} 
 async function purgeBooking(id){  try{    requirePerm('booking.delete');    const booking=DB.BOOKINGS.find(function(b){ return b.ID===id; });    if(!booking){ showToast('Data tidak ditemukan.','error'); return; }    if(!confirm('PERINGATAN: ini akan menghapus data booking "'+booking.ITEM_NAME+'" ('+booking.ID+') SECARA PERMANEN dan tidak bisa dipulihkan lagi, termasuk bukti transfer dan riwayat invoice-nya. Lanjutkan?')) return;    DB.BOOKINGS=DB.BOOKINGS.filter(function(x){ return x.ID!==id; });    await audit('PURGE','BOOKINGS',id,'Hapus permanen data booking dari arsip: '+booking.ITEM_NAME);    await saveDB();    showToast('Data booking dihapus permanen.','success');    renderBookingArchiveTable();  }catch(error){ showToast(getErrorMessage(error),'error'); }}
-async function autoCompleteExpiredRoomBookings(){
-  const now=new Date();
-  let changed=false;
-  (DB.BOOKINGS||[]).forEach(function(b){
-    if(b.TYPE!=='ROOM'||!['MENUNGGU','DISETUJUI','DIAMBIL'].includes(b.STATUS))return;
-    const endDate=b.END_DATE||b.DATE;
-    const endTime=b.END_TIME||'23:59';
-    const end=new Date(String(endDate||'')+'T'+String(endTime));
-    if(isNaN(end.getTime())||now<=end)return;
-    b.STATUS='SELESAI';
-    b.COMPLETED_AT=nowStr();
-    b.UPDATED_AT=nowStr();
-    b.NOTE=(b.NOTE?b.NOTE+' | ':'')+'Status otomatis menjadi SELESAI karena jadwal booking telah melewati tanggal/jam selesai.';
-    changed=true;
-  });
-  if(changed){
-    await audit('AUTO_COMPLETE','BOOKINGS','-','Sistem mengubah otomatis booking ruangan yang telah melewati tanggal dan jam selesai menjadi SELESAI');
-    await saveDB();
-  }
-  return changed;
-}
 async function expireOverdueInvoices(){
   const today=todayStr();
   let changed=false;
@@ -7461,6 +7416,7 @@ document.addEventListener('keydown',function(event){
   }
 });
 
+setInterval(function(){completeExpiredRoomBookings().catch(function(error){console.warn('Pemeriksaan otomatis booking ruang gagal:',error);});},30000);
 init();
 </script>
 </body>
