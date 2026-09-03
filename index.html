@@ -6504,21 +6504,13 @@ function renderDutyActionMenu(row){
   const own=row.USER_ID===STATE.currentUser.ID;
   const canManage=hasPermission(STATE.currentUser,'duty.manage');
   const execution=row.EXECUTION;
-  let html='<div style="position:relative;display:inline-block"><details><summary class="btn btn-primary btn-sm" style="list-style:none">⚙️ Aksi ▾</summary><div style="position:absolute;right:0;top:34px;z-index:100;background:#fff;border:1px solid var(--border);border-radius:10px;padding:6px;min-width:190px;box-shadow:0 12px 30px rgba(15,23,42,.15)">';
   if(own||canManage){
     if(!execution){
-      html+='<button class="btn btn-light btn-sm btn-block" style="margin-bottom:4px" onclick="scanDutyCheckpoint(\''+row.ID+'\')">📍 Scan Lokasi</button>';
-      html+='<button class="btn btn-light btn-sm btn-block" onclick="startDutyManual(\''+row.ID+'\')">✍️ Pelaksanaan Manual</button>';
-    }else{
-      html+='<button class="btn btn-light btn-sm btn-block" onclick=\'dutyLogDetail('+safeJson(execution)+')\'>👁️ Lihat Pelaksanaan</button>';
+      return '<div style="display:flex;gap:5px;justify-content:center;flex-wrap:wrap"><button class="btn btn-primary btn-sm" onclick="scanDutyCheckpoint(\''+row.ID+'\')">📍 Scan</button><button class="btn btn-light btn-sm" onclick="startDutyManual(\''+row.ID+'\')">✍️ Manual</button></div>';
     }
-  }else if(execution){
-    html+='<button class="btn btn-light btn-sm btn-block" onclick=\'dutyLogDetail('+safeJson(execution)+')\'>👁️ Lihat Pelaksanaan</button>';
-  }else{
-    html+='<span style="display:block;padding:7px 9px;font-size:11px;color:#69738A">Belum dimulai</span>';
+    return '<button class="btn btn-light btn-sm" onclick=\'dutyLogDetail('+safeJson(execution)+')\'>👁️ Lihat</button>';
   }
-  html+='</div></details></div>';
-  return html;
+  return execution?'<button class="btn btn-light btn-sm" onclick=\'dutyLogDetail('+safeJson(execution)+')\'>👁️ Lihat</button>':'<span class="hint">Belum dimulai</span>';
 }
 function scanDutyCheckpoint(scheduleId){
   const schedule=(DB.DUTY_SCHEDULES||[]).find(function(x){return x.ID===scheduleId;});
