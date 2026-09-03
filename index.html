@@ -5832,23 +5832,6 @@ async function deleteOrganization(id){
 }
 function programStatusLabel(status){return {AKTIF:'🟢 Aktif',NONAKTIF:'⚪ Nonaktif'}[status]||status||'-';}
 function programShouldRunToday(row,date){if(row.STATUS!=='AKTIF')return false;const d=new Date(date+'T00:00:00');const created=String(row.CREATED_AT||'').substring(0,10);if(!created)return false;const c=new Date(created+'T00:00:00');if(row.FREQUENCY==='HARIAN')return true;if(row.FREQUENCY==='MINGGUAN')return d.getDay()===c.getDay();if(row.FREQUENCY==='BULANAN')return d.getDate()===c.getDate();return false;}
-async function generateScheduledChecklists(date){
-  const today=date||todayStr();
-  let changed=false;
-  const schedules=(DB.DUTY_SCHEDULES||[]).filter(function(x){return x.DATE===today;});
-  schedules.forEach(function(schedule){
-    const exists=(DB.DUTY_LOGS||[]).some(function(x){return x.MATCHED_SCHEDULE_ID===schedule.ID;});
-    if(exists)return;
-    const program=schedule.PROGRAM_ID?(DB.WORK_PROGRAMS||[]).find(function(x){return x.ID===schedule.PROGRAM_ID;}):null;
-    const tasks=program?String(program.TASKS_TEXT||'').split(/\r?\n/).map(function(x){return x.trim();}).filter(Boolean):['Pelaksanaan tugas piket sesuai jadwal'];
-    const assignee=DB.USERS.find(function(x){return x.ID===schedule.USER_ID;});
-    const role=assignee?roleOf(assignee):null;
-    const type=role&&role.CODE==='SATPAM'?'PATROLI':(role&&role.CODE==='OB'?'KONTROL_ATK':'KEBERSIHAN');
-    DB.DUTY_LOGS.unshift({ID:uid('DLG'),MODE:program?'PROGRAM':'SCHEDULE',PROGRAM_ID:program?program.ID:'',PROGRAM_NAME:program?program.NAME:'',TYPE:type,USER_ID:schedule.USER_ID,USER_NAME:schedule.USER_NAME,ROLE_TYPE:role?role.CODE:schedule.ROLE_TYPE,DATE:today,TIME:schedule.SHIFT_START||'',LOCATION_TYPE:schedule.LOCATION_TYPE,ROOM_ID:schedule.ROOM_ID||'',BUILDING_ID:schedule.BUILDING_ID||'',LOCATION_NAME:schedule.LOCATION_NAME||schedule.LOCATION||'',LOCATION:schedule.LOCATION||'',CONDITION:'',NOTE:schedule.NOTE||'',PHOTO_DATA:'',PHOTO_NAME:'',PHOTO_TYPE:'',IS_SCAN:'FALSE',IN_SCHEDULE:'TRUE',MATCHED_SCHEDULE_ID:schedule.ID,DEVICE_INFO:'',GPS_LAT:'',GPS_LNG:'',GPS_MAP_LINK:'',STATUS:'BELUM_SELESAI',ITEMS:tasks.map(function(text){return {ID:uid('DLI'),TEXT:text,DONE:false,NOTE:''};}),CREATED_BY_ID:'SYSTEM',CREATED_BY_NAME:'Sistem',CREATED_AT:nowStr(),UPDATED_AT:nowStr()});
-    changed=true;
-  });
-  if(changed){await audit('CREATE','DUTY_LOGS','','Pembuatan pelaksanaan piket berdasarkan jadwal '+today);await saveDB();}
-}
 function renderPrograms(){
   try{requirePerm('program.view');const can=hasPermission(STATE.currentUser,'program.manage');const rows=(DB.WORK_PROGRAMS||[]).slice();const content=document.getElementById('content');content.innerHTML='<div class="page-title">🗓️ Program Kerja</div><div class="page-subtitle">Template pekerjaan rutin yang dapat dijalankan menjadi pelaksanaan piket harian.</div><div class="card"><div class="toolbar"><div class="toolbar-left"><input id="programSearch" class="search-box" placeholder="🔎 Cari program..." oninput="renderProgramTable()"></div><div class="toolbar-right">'+(can?'<button class="btn btn-primary" onclick="programForm()">+ Tambah Program</button>':'')+'</div></div><div id="programTable"></div></div>';renderProgramTable();}catch(error){showToast(getErrorMessage(error),'error');}
 }
@@ -5865,24 +5848,34 @@ function programDetail(row){openModal('Detail Program Kerja','<div class="kv"><s
 async function runProgram(id){
   try{
     requirePerm('program.manage');
-    const row=DB.WORK_PROGRAMS.find(function(x){return x.ID===id;});
-    if(!row){showToast('Program tidak ditemukan.','error');return;}
-    if(row.STATUS!=='AKTIF'){showToast('Program tidak aktif.','warning');return;}
+    const row=(DB.WORK_PROGRAMS||[]).find(function(x){return x.ID===id;});
+    if(!row){
+      showToast('Program tidak ditemukan.','error');
+      return;
+    }
+    if(row.STATUS!=='AKTIF'){
+      showToast('Program tidak aktif.','warning');
+      return;
+    }
     const today=todayStr();
-    const schedule=(DB.DUTY_SCHEDULES||[]).find(function(x){return x.PROGRAM_ID===id&&x.DATE===today&&x.USER_ID===row.ASSIGNEE_ID;});
-    if(!schedule){showToast('Program belum memiliki Jadwal Piket untuk hari ini. Buat jadwal terlebih dahulu agar pelaksanaan tercatat sesuai jadwal.','warning');return;}
-    const exists=(DB.DUTY_LOGS||[]).some(function(x){return x.MODE==='PROGRAM'&&x.PROGRAM_ID===id&&x.DATE===today&&x.MATCHED_SCHEDULE_ID===schedule.ID;});
-    if(exists){showToast('Pelaksanaan program ini untuk jadwal hari ini sudah dibuat.','warning');return;}
-    const tasks=String(row.TASKS_TEXT||'').split(/\r?\n/).map(function(x){return x.trim();}).filter(Boolean);
-    if(!tasks.length){showToast('Program belum memiliki daftar pekerjaan.','warning');return;}
-    const assignee=DB.USERS.find(function(x){return x.ID===schedule.USER_ID;});
-    const role=assignee?roleOf(assignee):null;
-    const type=role&&role.CODE==='SATPAM'?'PATROLI':(role&&role.CODE==='OB'?'KONTROL_ATK':'KEBERSIHAN');
-    const log={ID:uid('DLG'),MODE:'PROGRAM',PROGRAM_ID:id,PROGRAM_NAME:row.NAME,TYPE:type,USER_ID:schedule.USER_ID,USER_NAME:schedule.USER_NAME,ROLE_TYPE:role?role.CODE:schedule.ROLE_TYPE,DATE:today,TIME:nowStr().substring(11,16),LOCATION_TYPE:schedule.LOCATION_TYPE,ROOM_ID:schedule.ROOM_ID||'',BUILDING_ID:schedule.BUILDING_ID||'',LOCATION_NAME:schedule.LOCATION_NAME||schedule.LOCATION||row.AREA,LOCATION:schedule.LOCATION||row.AREA,CONDITION:'',NOTE:schedule.NOTE||'',PHOTO_DATA:'',PHOTO_NAME:'',PHOTO_TYPE:'',IS_SCAN:'FALSE',IN_SCHEDULE:'TRUE',MATCHED_SCHEDULE_ID:schedule.ID,DEVICE_INFO:'',GPS_LAT:'',GPS_LNG:'',GPS_MAP_LINK:'',STATUS:'BELUM_SELESAI',ITEMS:tasks.map(function(text){return {ID:uid('DLI'),TEXT:text,DONE:false,NOTE:''};}),CREATED_BY_ID:STATE.currentUser.ID,CREATED_AT:nowStr(),UPDATED_AT:nowStr()};
-    DB.DUTY_LOGS.unshift(log);
-    await audit('CREATE','DUTY_LOGS',log.ID,'Jalankan program '+row.NAME+' sesuai jadwal '+schedule.ID);
-    await saveDB();showToast('Pelaksanaan piket berhasil dibuat dan terhubung ke jadwal.','success');navigate('duty-log');
-  }catch(error){showToast(getErrorMessage(error),'error');}
+    const schedule=(DB.DUTY_SCHEDULES||[]).find(function(x){
+      return x.PROGRAM_ID===id&&x.DATE===today&&x.USER_ID===row.ASSIGNEE_ID;
+    });
+    if(!schedule){
+      openModal('▶ Jalankan Program Kerja','<div class="kv"><span>Program</span><b>'+escapeHtml(row.NAME||'-')+'</b></div><div class="hint">Program ini belum memiliki <b>Jadwal Piket hari ini</b>. Buat jadwal terlebih dahulu agar pelaksanaan dapat divalidasi berdasarkan petugas, waktu, dan lokasi.</div>',['<button class="btn btn-light" onclick="closeModal()">Batal</button>','<button class="btn btn-primary" onclick="closeModal();navigate(\'duty-schedule\')">📅 Buat Jadwal Piket</button>']);
+      return;
+    }
+    const existing=(DB.DUTY_LOGS||[]).find(function(x){
+      return x.MATCHED_SCHEDULE_ID===schedule.ID&&x.DATE===schedule.DATE;
+    });
+    if(existing){
+      openModal('▶ Pelaksanaan Program','<div class="kv"><span>Program</span><b>'+escapeHtml(row.NAME||'-')+'</b></div><div class="kv"><span>Petugas</span><b>'+escapeHtml(schedule.USER_NAME||'-')+'</b></div><div class="kv"><span>Jadwal</span><b>'+escapeHtml(schedule.DATE||'-')+' · '+escapeHtml((schedule.SHIFT_START||'-')+'–'+(schedule.SHIFT_END||'-'))+'</b></div><div class="hint">Pelaksanaan untuk jadwal ini sudah dimulai dengan metode <b>'+(existing.EXECUTION_MODE==='SCAN'||existing.IS_SCAN==='TRUE'?'📍 Scan Lokasi':'✍️ Manual')+'</b>.</div>',['<button class="btn btn-light" onclick="closeModal()">Batal</button>','<button class="btn btn-primary" onclick="closeModal();dutyLogDetail('+safeJson(existing)+')">👁️ Lihat Pelaksanaan</button>']);
+      return;
+    }
+    openModal('▶ Jalankan Program Kerja','<div class="kv"><span>Program</span><b>'+escapeHtml(row.NAME||'-')+'</b></div><div class="kv"><span>Petugas</span><b>'+escapeHtml(schedule.USER_NAME||'-')+'</b></div><div class="kv"><span>Tanggal</span><b>'+escapeHtml(schedule.DATE||'-')+'</b></div><div class="kv"><span>Jam Tugas</span><b>'+escapeHtml((schedule.SHIFT_START||'-')+'–'+(schedule.SHIFT_END||'-'))+'</b></div><div class="kv"><span>Lokasi</span><b>'+escapeHtml(schedule.LOCATION||'-')+'</b></div><div class="hint">Program Kerja adalah template checklist. Pelaksanaan baru dibuat setelah petugas melakukan <b>Scan Lokasi</b> atau <b>Pelaksanaan Manual</b> pada menu Pelaksanaan Piket.</div>',['<button class="btn btn-light" onclick="closeModal()">Tutup</button>','<button class="btn btn-primary" onclick="closeModal();navigate(\'duty-log\')">📋 Buka Pelaksanaan Piket</button>']);
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 function performancePeriodBounds(period){const today=new Date();const y=today.getFullYear(),m=today.getMonth()+1;if(period==='YEARLY')return {start:y+'-01-01',end:y+'-12-31',label:String(y)};if(period==='SEMESTER'){const first=m<=6?'01-01':'07-01',last=m<=6?'06-30':'12-31',semester=m<=6?'Semester 1':'Semester 2';return {start:y+'-'+first,end:y+'-'+last,label:semester+' '+y};}const start=new Date(y,m-1,1),end=new Date(y,m,0);return {start:y+'-'+String(m).padStart(2,'0')+'-01',end:y+'-'+String(m).padStart(2,'0')+'-'+String(end.getDate()).padStart(2,'0'),label:start.toLocaleDateString('id-ID',{month:'long',year:'numeric'})};}
 function getPerformanceReportData(start,end){const tasks=DB.DUTY_TASKS||[],reports=DB.REPORTS||[],maintenance=DB.MAINTENANCE||[],dutyLogs=DB.DUTY_LOGS||[],users=(DB.USERS||[]).filter(function(u){return u.STATUS==='AKTIF';});const inRange=function(value){const d=String(value||'').substring(0,10);return d&&d>=start&&d<=end;};const taskInRange=function(t){return inRange(t.CREATED_AT)||inRange(t.STARTED_AT)||inRange(t.SUBMITTED_AT)||inRange(t.VERIFIED_AT)||inRange(t.COMPLETED_AT);};const ts=tasks.filter(taskInRange),rs=reports.filter(function(r){return inRange(r.REPORTED_AT)||inRange(r.COMPLETED_AT)||inRange(r.UPDATED_AT);}),ms=maintenance.filter(function(m){return inRange(m.SCHEDULE_DATE)||inRange(m.COMPLETED_AT)||inRange(m.UPDATED_AT);}),dl=dutyLogs.filter(function(x){return inRange(x.DATE)||inRange(x.CREATED_AT)||inRange(x.UPDATED_AT);});const rows=users.map(function(u){const mine=ts.filter(function(t){return t.ASSIGNEE_ID===u.ID;}),done=mine.filter(function(t){return t.STATUS==='SELESAI'&&inRange(t.COMPLETED_AT||t.VERIFIED_AT);}),verified=mine.filter(function(t){return t.STATUS==='SELESAI'&&inRange(t.VERIFIED_AT);}),late=mine.filter(function(t){return taskIsOverdue(t,end);}),myDuty=dl.filter(function(x){return x.MODE==='PROGRAM'&&x.USER_ID===u.ID;}),myDutyDone=myDuty.filter(function(x){return x.STATUS==='SELESAI';});const completion=mine.length?Math.round(done.length/mine.length*100):0;const verification=mine.length?Math.round(verified.length/mine.length*100):0;const punctual=mine.length?Math.max(0,100-Math.round(late.length/mine.length*100)):100;const score=mine.length?Math.round(completion*.5+verification*.3+punctual*.2):0;return {ID:u.ID,NAME:u.NAME,ROLE:roleOf(u)?.NAME||u.ROLE_CODE,TASKS:mine.length,DONE:done.length,LATE:late.length,VERIFY:verified.length,PIKET:myDutyDone.length,SCORE:score};}).filter(function(r){return r.TASKS>0;}).sort(function(a,b){return b.SCORE-a.SCORE||b.DONE-a.DONE||a.NAME.localeCompare(b.NAME);});return {tasks:ts,reports:rs,maintenance:ms,dutyLogs:dl,rows:rows};}
@@ -6691,91 +6684,36 @@ async function createDutyExecution(schedule,mode,context){
 }
 
 function dutyLogForm(scanContext){
-  requirePerm('duty.view');
-  const role=roleOf(STATE.currentUser);
-  const roleCode=role?role.CODE:'';
-  const defaultType = roleCode==='SATPAM' ? 'PATROLI' : (roleCode==='OB' ? 'KONTROL_ATK' : 'KEBERSIHAN');
-
-  const room = scanContext && scanContext.roomId ? DB.ROOMS.find(function(r){ return r.ID===scanContext.roomId; }) : null;
-  const building = scanContext && scanContext.buildingId ? DB.BUILDINGS.find(function(b){ return b.ID===scanContext.buildingId; }) : null;
-  const matched = scanContext ? scanContext.matched : null;
-  const isScan = !!(room || building);
-
-  const locationLabel = room
-    ? (room.NAME+' ('+nameOf('BUILDINGS',room.BUILDING_ID)+')')
-    : (building ? ('Seluruh Gedung: '+building.NAME) : '');
-
-  const scheduleHint = !isScan ? '' : (
-    matched
-      ? '<div class="hint" style="background:#F0FDF4;border-radius:8px;padding:8px 10px;color:#15803D">✅ Lokasi ini sesuai jadwal piket Anda hari ini.</div>'
-      : '<div class="hint" style="background:#FFFBEB;border-radius:8px;padding:8px 10px;color:#B45309">⚠️ Lokasi ini TIDAK terdaftar di jadwal piket Anda hari ini. Laporan tetap bisa disimpan, tapi akan ditandai di luar jadwal.</div>'
-  );
-  const scanMeta = scanContext ? (scanContext.scanMeta||{}) : {};
-  const deviceInfoText = scanMeta.device || '';
-  const geo = scanMeta.geo || null;
-  const scanMetaHint = !isScan ? '' : (
-    '<div class="hint">📱 Perangkat: <b>'+escapeHtml(deviceInfoText||'-')+'</b>'+
-    (geo ? ' · 📍 <a href="'+mapsLinkFromGeo(geo)+'" target="_blank">Lihat Lokasi GPS</a>' : ' · 📍 Lokasi GPS tidak tersedia (izin ditolak/tidak didukung)')+
-    '</div>'
-  );
-  const nowTime=(function(){ const n=new Date(); return String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0'); })();
-
-  openModal('📋 Lapor Pelaksanaan Tugas', `
-    <div class="form-grid">
-      <div class="form-full">
-        <label>Jenis Laporan *</label>
-        <select id="dl_TYPE" onchange="onDutyLogTypeChange()">
-          <option value="KEBERSIHAN" ${defaultType==='KEBERSIHAN'?'selected':''}>🧹 Kebersihan Ruangan</option>
-          <option value="KONTROL_ATK" ${defaultType==='KONTROL_ATK'?'selected':''}>📦 Kontrol ATK & Barang Habis Pakai</option>
-          <option value="PATROLI" ${defaultType==='PATROLI'?'selected':''}>🛡️ Patroli Keamanan</option>
-        </select>
-      </div>
-      ${isScan?`
-        <div class="form-full"><div class="hint">📍 Lokasi hasil scan: <b>${escapeHtml(locationLabel)}</b></div></div>
-        ${scheduleHint?`<div class="form-full">${scheduleHint}</div>`:''}
-        ${scanMetaHint?`<div class="form-full">${scanMetaHint}</div>`:''}
-      `:`
-        <div class="form-full">
-          <label>Jenis Lokasi</label>
-          <select id="dl_LOCATION_TYPE" onchange="onDutyLogLocationTypeChange()">
-            <option value="ROOM">Ruangan Terdaftar</option>
-            <option value="OTHER">Area Lain (bebas)</option>
-          </select>
-        </div>
-        <div class="form-full" id="dl_room_wrap">
-          <label>Gedung</label>
-          <select id="dl_BUILDING_SELECT" onchange="onDutyLogBuildingChange()">${selectOptions(DB.BUILDINGS,'ID','NAME',null,true)}</select>
-          <label style="margin-top:8px">Ruangan *</label>
-          <select id="dl_ROOM_ID_SELECT"><option value="">— Pilih Gedung dulu —</option></select>
-        </div>
-        <div class="form-full" id="dl_other_wrap" style="display:none">
-          <label>Nama Lokasi *</label>
-          <input id="dl_LOCATION_NAME_INPUT" placeholder="Contoh: Pos Gerbang Utama, Area Parkir">
-        </div>
-      `}
-      <div><label>Tanggal</label><input id="dl_DATE" type="date" value="${todayStr()}" ${isScan?'readonly':''}></div>
-      <div><label>Jam</label><input id="dl_TIME" type="time" value="${nowTime}" ${isScan?'readonly':''}></div>
-      <div class="form-full" id="dl_condition_wrap"></div>
-      <div class="form-full"><label>Catatan / Rincian</label><textarea id="dl_NOTE" placeholder="Contoh (Kontrol ATK): Kertas A4 diisi 1 rim, tinta printer cukup"></textarea></div>
-      <div class="form-full"><label>Upload Foto (JPG, maks 3MB)</label><input id="dl_PHOTO" type="file" accept=".jpg,.jpeg,image/jpeg"></div>
-    </div>
-    <div class="hint" id="dl_photo_required_hint" style="margin-top:6px"></div>
-    <input type="hidden" id="dl_PRESET_ROOM_ID" value="${room?room.ID:''}">
-    <input type="hidden" id="dl_PRESET_BUILDING_ID" value="${building?building.ID:''}">
-    <input type="hidden" id="dl_MATCHED_SCHEDULE_ID" value="${matched?matched.ID:''}">
-    <input type="hidden" id="dl_IS_SCAN" value="${isScan?'TRUE':'FALSE'}">
-    <input type="hidden" id="dl_DEVICE_INFO" value="${escapeHtml(deviceInfoText)}">
-    <input type="hidden" id="dl_GPS_LAT" value="${geo?geo.lat:''}">
-    <input type="hidden" id="dl_GPS_LNG" value="${geo?geo.lng:''}">
-  `,[
-    `<button class="btn btn-light" onclick="closeModal()">Batal</button>`,
-    `<button class="btn btn-primary" onclick="saveDutyLog()">💾 Simpan Laporan</button>`
-  ]);
-
-  setTimeout(function(){
-    onDutyLogTypeChange();
-    if(!isScan) onDutyLogLocationTypeChange();
-  },50);
+  try{
+    requirePerm('duty.view');
+    scanContext=scanContext||{};
+    const schedule=scanContext.schedule||scanContext.matched||null;
+    if(schedule){
+      const existing=(DB.DUTY_LOGS||[]).find(function(x){return x.MATCHED_SCHEDULE_ID===schedule.ID&&x.DATE===schedule.DATE;});
+      if(existing){
+        dutyLogDetail(existing);
+        return;
+      }
+      if(scanContext.isManual){
+        if(typeof createDutyExecution==='function'){
+          createDutyExecution(schedule,'MANUAL',{});
+          return;
+        }
+      }
+      if(scanContext.scanMeta&&typeof createDutyExecution==='function'){
+        const roomId=scanContext.roomId||'';
+        const buildingId=scanContext.buildingId||'';
+        createDutyExecution(schedule,'SCAN',{roomId:roomId,buildingId:buildingId,scanMeta:scanContext.scanMeta});
+        return;
+      }
+    }
+    const room=scanContext.roomId?(DB.ROOMS||[]).find(function(x){return x.ID===scanContext.roomId;}):null;
+    const building=scanContext.buildingId?(DB.BUILDINGS||[]).find(function(x){return x.ID===scanContext.buildingId;}):null;
+    const location=room?(room.NAME+' ('+nameOf('BUILDINGS',room.BUILDING_ID)+')'):building?building.NAME:'';
+    openModal('📋 Pelaksanaan Piket','<div class="hint">Pelaksanaan piket harus dimulai dari <b>Jadwal Piket</b> melalui menu <b>Aksi</b>.</div>'+(location?'<div class="kv"><span>Lokasi</span><b>'+escapeHtml(location)+'</b></div>':'')+'<div class="hint">Pilih <b>📍 Scan Lokasi</b> untuk validasi lokasi atau <b>✍️ Pelaksanaan Manual</b> sebagai pengecualian.</div>',['<button class="btn btn-primary" onclick="closeModal()">Tutup</button>']);
+  }catch(error){
+    showToast(getErrorMessage(error),'error');
+  }
 }
 function onDutyLogTypeChange(){
   const type=getValue('dl_TYPE');
@@ -6914,23 +6852,29 @@ async function saveDutyLog(){
 }
 
 function dutyLogDetail(row){
+  if(!row)return;
   const typeLabels={KEBERSIHAN:'🧹 Kebersihan Ruangan',KONTROL_ATK:'📦 Kontrol ATK & Barang Habis Pakai',PATROLI:'🛡️ Patroli Keamanan'};
   if(row.MODE==='PROGRAM'&&Array.isArray(row.ITEMS)){
     const own=row.USER_ID===STATE.currentUser.ID;
     const canManage=hasPermission(STATE.currentUser,'duty.manage');
     const items=row.ITEMS||[];
-    const checklist=items.map(function(item,i){
+    const doneCount=items.filter(function(item){return item.DONE;}).length;
+    const method=row.EXECUTION_MODE==='SCAN'||row.IS_SCAN==='TRUE'?'📍 Scan Lokasi':'✍️ Manual';
+    const checklist=items.length?items.map(function(item,i){
       const handler=(own||canManage)&&row.STATUS!=='SELESAI'?'onchange="toggleDutyProgramItem(\''+row.ID+'\','+i+',this.checked)"':'disabled';
-      return '<label style="display:grid;grid-template-columns:20px minmax(0,1fr);gap:8px;align-items:start;width:100%;box-sizing:border-box;padding:9px 0;border-bottom:1px solid var(--border);text-align:left"><input type="checkbox" style="margin:2px 0 0 0;justify-self:start" '+(item.DONE?'checked':'')+' '+handler+'><span style="display:block;text-align:left;line-height:1.5;word-break:break-word">'+escapeHtml(item.TEXT)+'</span></label>';
-    }).join('');
-    const executionMode=row.EXECUTION_MODE==='SCAN'?'📍 Scan Lokasi':'✍️ Manual';
-    openModal('📋 '+escapeHtml(row.PROGRAM_NAME||'Pelaksanaan Piket'),'<div class="kv"><span>Program</span><b>'+escapeHtml(row.PROGRAM_NAME||'-')+'</b></div><div class="kv"><span>Petugas</span><b>'+escapeHtml(row.USER_NAME||'-')+'</b></div><div class="kv"><span>Lokasi</span><b>'+escapeHtml(row.LOCATION||'-')+'</b></div><div class="kv"><span>Metode Pelaksanaan</span><b>'+executionMode+'</b></div><div class="kv"><span>Waktu Mulai</span><b>'+escapeHtml(row.STARTED_AT||'-')+'</b></div><div class="kv"><span>Sesuai Jadwal</span><b>'+((row.IN_SCHEDULE==='TRUE')?'✅ Ya':'⚠️ Tidak')+'</b></div>'+(row.GPS_MAP_LINK?'<div class="kv"><span>GPS</span><b><a href="'+row.GPS_MAP_LINK+'" target="_blank">📍 Lihat Lokasi</a></b></div>':'')+'<div class="card" style="margin-top:12px"><div class="card-title">Pekerjaan</div><div class="duty-checklist">'+checklist+'</div></div><div class="hint">Checklist baru tersedia karena pelaksanaan sudah dimulai. Status otomatis menjadi <b>Selesai</b> setelah seluruh pekerjaan dicentang.</div>',['<button class="btn btn-primary" onclick="closeModal()">Tutup</button>']);
+      return '<label style="display:grid;grid-template-columns:20px minmax(0,1fr);gap:8px;align-items:start;width:100%;box-sizing:border-box;padding:9px 0;border-bottom:1px solid var(--border);text-align:left"><input type="checkbox" style="margin:2px 0 0 0;justify-self:start" '+(item.DONE?'checked':'')+' '+handler+'><span style="display:block;text-align:left;line-height:1.5;word-break:break-word">'+escapeHtml(item.TEXT||'-')+'</span></label>';
+    }).join(''):'<div class="hint">Belum ada pekerjaan pada program ini.</div>';
+    const schedule=(DB.DUTY_SCHEDULES||[]).find(function(x){return x.ID===row.MATCHED_SCHEDULE_ID;});
+    const status=row.STATUS==='SELESAI'?'<span class="badge badge-success">✅ Selesai</span>':'<span class="badge badge-warning">⏳ Belum Selesai</span>';
+    const gps=row.GPS_MAP_LINK?'<div class="kv"><span>Lokasi GPS</span><b><a href="'+escapeHtml(row.GPS_MAP_LINK)+'" target="_blank">📍 Lihat di Peta</a></b></div>':'';
+    const scheduleInfo=schedule?'<div class="kv"><span>Jadwal</span><b>'+escapeHtml(schedule.DATE||'-')+' · '+escapeHtml((schedule.SHIFT_START||'-')+'–'+(schedule.SHIFT_END||'-'))+'</b></div>':'';
+    openModal('📋 '+escapeHtml(row.PROGRAM_NAME||'Pelaksanaan Piket'),'<div class="kv"><span>Program</span><b>'+escapeHtml(row.PROGRAM_NAME||'-')+'</b></div><div class="kv"><span>Jenis</span><b>'+escapeHtml(typeLabels[row.TYPE]||row.TYPE||'-')+'</b></div><div class="kv"><span>Pelaksana</span><b>'+escapeHtml(row.USER_NAME||'-')+'</b></div><div class="kv"><span>Lokasi</span><b>'+escapeHtml(row.LOCATION||'-')+'</b></div>'+scheduleInfo+'<div class="kv"><span>Metode Pelaksanaan</span><b>'+method+'</b></div><div class="kv"><span>Sesuai Jadwal</span><b>'+(row.IN_SCHEDULE==='TRUE'?'✅ Ya':'❌ Tidak')+'</b></div><div class="kv"><span>Waktu Mulai</span><b>'+escapeHtml(row.STARTED_AT||row.DATE+' '+(row.TIME||''))+'</b></div><div class="kv"><span>Status</span>'+status+'</div>'+(row.DEVICE_INFO?'<div class="kv"><span>Perangkat</span><b>'+escapeHtml(row.DEVICE_INFO)+'</b></div>':'')+gps+'<div class="card" style="margin-top:12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div class="card-title">Checklist Pekerjaan</div><b>'+doneCount+'/'+items.length+'</b></div><div class="duty-checklist">'+checklist+'</div></div><div class="hint">Checklist hanya dapat dikerjakan setelah pelaksanaan dimulai melalui <b>Scan Lokasi</b> atau <b>Pelaksanaan Manual</b>. Status otomatis menjadi <b>Selesai</b> setelah seluruh pekerjaan dicentang.</div>',['<button class="btn btn-primary" onclick="closeModal()">Tutup</button>']);
     return;
   }
-  const photoHtml=row.PHOTO_DATA?`<img src="${row.PHOTO_DATA}" style="width:100%;max-height:280px;object-fit:contain;border-radius:10px;border:1px solid var(--border);margin-top:8px">`:'<div class="hint">Tidak ada foto.</div>';
-  openModal(typeLabels[row.TYPE]||'Detail Laporan','<div class="kv"><span>Petugas</span><b>'+escapeHtml(row.USER_NAME)+'</b></div><div class="kv"><span>Tanggal</span><b>'+escapeHtml(row.DATE)+' '+escapeHtml(row.TIME||'')+'</b></div><div class="kv"><span>Lokasi</span><b>'+escapeHtml(row.LOCATION)+'</b></div><div class="kv"><span>Kondisi</span>'+statusBadge(row.CONDITION)+'</div>'+(row.NOTE?'<div class="kv"><span>Catatan</span><b>'+escapeHtml(row.NOTE)+'</b></div>':'')+(row.IS_SCAN==='TRUE'?'<div class="kv"><span>Sesuai Jadwal</span><b>'+(row.IN_SCHEDULE==='TRUE'?'✅ Ya':'⚠️ Tidak, di luar jadwal')+'</b></div>':'')+(row.DEVICE_INFO?'<div class="kv"><span>Perangkat</span><b>'+escapeHtml(row.DEVICE_INFO)+'</b></div>':'')+(row.GPS_MAP_LINK?'<div class="kv"><span>Lokasi GPS</span><b><a href="'+row.GPS_MAP_LINK+'" target="_blank">📍 Lihat di Peta</a></b></div>':'')+'<div style="margin-top:12px"><label style="font-size:11.5px;font-weight:700;color:#3A4258">Foto</label>'+photoHtml+'</div>',['<button class="btn btn-light" onclick="closeModal()">Tutup</button>']);
+  const photoHtml=row.PHOTO_DATA?'<img src="'+row.PHOTO_DATA+'" style="width:100%;max-height:280px;object-fit:contain;border-radius:10px;border:1px solid var(--border);margin-top:8px">':'<div class="hint">Tidak ada foto.</div>';
+  const method=row.EXECUTION_MODE==='SCAN'||row.IS_SCAN==='TRUE'?'📍 Scan Lokasi':'✍️ Manual';
+  openModal(typeLabels[row.TYPE]||'Detail Laporan','<div class="kv"><span>Petugas</span><b>'+escapeHtml(row.USER_NAME||'-')+'</b></div><div class="kv"><span>Tanggal</span><b>'+escapeHtml(row.DATE||'-')+' '+escapeHtml(row.TIME||'')+'</b></div><div class="kv"><span>Lokasi</span><b>'+escapeHtml(row.LOCATION||'-')+'</b></div><div class="kv"><span>Metode Pelaksanaan</span><b>'+method+'</b></div>'+(row.CONDITION?'<div class="kv"><span>Kondisi</span>'+statusBadge(row.CONDITION)+'</div>':'')+(row.NOTE?'<div class="kv"><span>Catatan</span><b>'+escapeHtml(row.NOTE)+'</b></div>':'')+(row.IS_SCAN==='TRUE'?'<div class="kv"><span>Sesuai Jadwal</span><b>'+(row.IN_SCHEDULE==='TRUE'?'✅ Ya':'⚠️ Tidak')+'</b></div>':'')+(row.DEVICE_INFO?'<div class="kv"><span>Perangkat</span><b>'+escapeHtml(row.DEVICE_INFO)+'</b></div>':'')+(row.GPS_MAP_LINK?'<div class="kv"><span>Lokasi GPS</span><b><a href="'+escapeHtml(row.GPS_MAP_LINK)+'" target="_blank">📍 Lihat di Peta</a></b></div>':'')+'<div style="margin-top:12px"><label style="font-size:11.5px;font-weight:700;color:#3A4258">Foto</label>'+photoHtml+'</div>',['<button class="btn btn-light" onclick="closeModal()">Tutup</button>']);
 }
-
 async function toggleDutyProgramItem(id,index,done){
   try{requirePerm('duty.view');const row=(DB.DUTY_LOGS||[]).find(function(x){return x.ID===id;});if(!row||row.MODE!=='PROGRAM'||!row.ITEMS||!row.ITEMS[index])return;if(row.STATUS==='SELESAI'){showToast('Pelaksanaan yang sudah selesai tidak dapat diubah.','warning');return;}if(row.USER_ID!==STATE.currentUser.ID&&!hasPermission(STATE.currentUser,'duty.manage')){showToast('Pelaksanaan ini bukan tanggung jawab Anda.','error');return;}row.ITEMS[index].DONE=!!done;row.STATUS=row.ITEMS.length&&row.ITEMS.every(function(x){return x.DONE;})?'SELESAI':'BELUM_SELESAI';row.UPDATED_AT=nowStr();if(row.STATUS==='SELESAI')row.COMPLETED_AT=nowStr();await audit('CHECK','DUTY_LOGS',id,'Perbarui pelaksanaan program '+row.PROGRAM_NAME);await saveDB();closeModal();showToast(row.STATUS==='SELESAI'?'Pelaksanaan piket selesai.':'Checklist pelaksanaan diperbarui.','success');renderDutyLog();}catch(error){showToast(getErrorMessage(error),'error');}
 }
